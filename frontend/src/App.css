@@ -1,0 +1,197 @@
+.app-shell {
+  min-height: 100vh;
+  color: #12263f;
+}
+
+.topbar {
+  padding: 18px 24px;
+  background: linear-gradient(135deg, #0b3a66, #0f6ab4);
+  color: #f5fbff;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 14px;
+}
+
+.topbar h1 {
+  margin: 0;
+  font-size: 1.4rem;
+}
+
+.topbar nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.topbar a {
+  color: #dff3ff;
+  text-decoration: none;
+  padding: 8px 10px;
+  border-radius: 8px;
+}
+
+.link-btn {
+  background: transparent;
+  border: 0;
+  color: #dff3ff;
+  padding: 8px 10px;
+  border-radius: 8px;
+  cursor: pointer;
+  font: inherit;
+}
+
+.link-btn:hover {
+  background: rgba(255, 255, 255, 0.14);
+}
+
+.topbar a.active {
+  background: #ffffff;
+  color: #0b3a66;
+}
+
+main {
+  max-width: 980px;
+  margin: 0 auto;
+  padding: 24px 16px 40px;
+}
+
+.hero {
+  background: linear-gradient(140deg, #eff8ff, #ffffff);
+  border: 1px solid #d4e9fb;
+  border-radius: 14px;
+  padding: 24px;
+}
+
+.hero h2 {
+  margin-top: 8px;
+  font-size: 2rem;
+}
+
+.badge {
+  margin: 0;
+  color: #0f6ab4;
+  font-weight: 600;
+}
+
+.actions {
+  margin-top: 18px;
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.btn {
+  background: #0f6ab4;
+  color: white;
+  border: 0;
+  border-radius: 10px;
+  padding: 10px 14px;
+  cursor: pointer;
+  text-decoration: none;
+}
+
+.btn-secondary {
+  background: #0f9d78;
+}
+
+.card {
+  background: #fff;
+  border: 1px solid #dce7f4;
+  border-radius: 14px;
+  padding: 20px;
+}
+
+.form-grid {
+  display: grid;
+  gap: 10px;
+}
+
+.form-grid input,
+.chat-input input {
+  border: 1px solid #bfd6eb;
+  border-radius: 10px;
+  padding: 10px;
+}
+
+.jobs-list {
+  display: grid;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.job-item {
+  border: 1px solid #dce7f4;
+  border-radius: 10px;
+  padding: 12px;
+  background: #f9fcff;
+}
+
+.job-item h3 {
+  margin: 0 0 6px;
+}
+
+.job-item p {
+  margin: 0 0 4px;
+}
+
+.dashboard-grid {
+  display: grid;
+  grid-template-columns: 1fr 1.2fr;
+  gap: 14px;
+}
+
+.chatbot {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.chat-stream {
+  border: 1px solid #dce7f4;
+  border-radius: 10px;
+  padding: 10px;
+  min-height: 220px;
+  background: #f8fbff;
+}
+
+.bubble {
+  margin: 6px 0;
+  padding: 9px 10px;
+  border-radius: 10px;
+  max-width: 90%;
+}
+
+.bubble.bot {
+  background: #e9f3ff;
+}
+
+.bubble.user {
+  background: #ddf7ee;
+  margin-left: auto;
+}
+
+.chat-input {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 10px;
+}
+
+.error {
+  color: #c10000;
+}
+
+.success {
+  color: #0a7f4f;
+}
+
+@media (max-width: 760px) {
+  .dashboard-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .hero h2 {
+    font-size: 1.4rem;
+  }
+}
