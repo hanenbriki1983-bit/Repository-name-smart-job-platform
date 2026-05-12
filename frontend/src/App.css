@@ -136,6 +136,10 @@ main {
   margin: 0 0 4px;
 }
 
+.job-actions {
+  margin-top: 10px;
+}
+
 .dashboard-grid {
   display: grid;
   grid-template-columns: 1fr 1.2fr;
@@ -184,6 +188,23 @@ main {
 
 .success {
   color: #0a7f4f;
+}
+
+.applications-list {
+  display: grid;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.application-item {
+  border: 1px solid #dce7f4;
+  border-radius: 10px;
+  padding: 10px;
+  background: #f9fcff;
+}
+
+.application-item p {
+  margin: 4px 0;
 }
 
 @media (max-width: 760px) {

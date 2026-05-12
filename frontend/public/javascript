@@ -1,0 +1,39 @@
+(async () => {
+  const email = `hanen_${Date.now()}@example.com`;
+  const password = "12345678";
+
+  console.log("Registering:", email);
+  const registerRes = await fetch("http://127.0.0.1:8001/auth/register", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      name: "Hanen",
+      email,
+      password
+    })
+  });
+  const registerData = await registerRes.json();
+  console.log("Register response:", registerRes.status, registerData);
+
+  console.log("Logging in...");
+  const loginRes = await fetch("http://127.0.0.1:8001/auth/login", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ email, password })
+  });
+  const loginData = await loginRes.json();
+  console.log("Login response:", loginRes.status, loginData);
+
+  if (!loginData.token) {
+    console.error("No token returned. Stop.");
+    return;
+  }
+
+  console.log("Checking /auth/me ...");
+  const meRes = await fetch("http://127.0.0.1:8001/auth/me", {
+    headers: { Authorization: `Bearer ${loginData.token}` }
+  });
+  const meData = await meRes.json();
+  console.log("Me response:", meRes.status, meData);
+})();
+

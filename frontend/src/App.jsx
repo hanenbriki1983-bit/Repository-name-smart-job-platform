@@ -184,10 +184,11 @@ function RegisterPage() {
   )
 }
 
-function JobsPage() {
+function JobsPage({ token }) {
   const [jobs, setJobs] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
+  const [applyMessage, setApplyMessage] = useState('')
 
   useEffect(() => {
     const fetchJobs = async () => {
@@ -208,17 +209,51 @@ function JobsPage() {
     fetchJobs()
   }, [])
 
+  const handleApply = async (jobId) => {
+    if (!token) {
+      setApplyMessage('Please login first to apply.')
+      return
+    }
+
+    setApplyMessage('')
+    try {
+      const response = await fetch(`${apiBaseUrl}/applications`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ job_id: jobId }),
+      })
+
+      const data = await response.json()
+      if (!response.ok) {
+        throw new Error(data.detail || 'Apply failed')
+      }
+
+      setApplyMessage('Application submitted successfully.')
+    } catch (err) {
+      setApplyMessage(err.message)
+    }
+  }
+
   return (
     <section className="card">
       <h2>Jobs</h2>
       {loading && <p>Loading jobs...</p>}
       {error && <p className="error">{error}</p>}
+      {applyMessage && <p className="success">{applyMessage}</p>}
       <div className="jobs-list">
         {jobs.map((job) => (
           <article className="job-item" key={job.id}>
             <h3>{job.title}</h3>
             <p>{job.company}</p>
             <small>{job.location}</small>
+            <div className="job-actions">
+              <button type="button" className="btn" onClick={() => handleApply(job.id)}>
+                Apply Now
+              </button>
+            </div>
           </article>
         ))}
       </div>
@@ -228,6 +263,7 @@ function JobsPage() {
 
 function DashboardPage({ currentUser, token, onAuthInvalid }) {
   const [jobs, setJobs] = useState([])
+  const [applications, setApplications] = useState([])
   const [verifiedUser, setVerifiedUser] = useState(currentUser)
   const [authError, setAuthError] = useState('')
   const [messages, setMessages] = useState([
@@ -268,15 +304,33 @@ function DashboardPage({ currentUser, token, onAuthInvalid }) {
         setJobs([])
       }
     }
+
+    const loadApplications = async () => {
+      try {
+        const response = await fetch(`${apiBaseUrl}/applications`, {
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+        })
+        if (!response.ok) return
+        const data = await response.json()
+        setApplications(data)
+      } catch {
+        setApplications([])
+      }
+    }
+
     loadJobs()
-  }, [])
+    loadApplications()
+  }, [token])
 
   const stats = useMemo(
     () => ({
       totalJobs: jobs.length,
       remoteJobs: jobs.filter((job) => job.location.toLowerCase().includes('remote')).length,
+      applicationsCount: applications.length,
     }),
-    [jobs]
+    [jobs, applications]
   )
 
   const sendMessage = () => {
@@ -296,6 +350,19 @@ function DashboardPage({ currentUser, token, onAuthInvalid }) {
         <p>Email: {verifiedUser?.email || currentUser?.email || '-'}</p>
         <p>Total jobs: {stats.totalJobs}</p>
         <p>Remote jobs: {stats.remoteJobs}</p>
+        <p>My applications: {stats.applicationsCount}</p>
+
+        <h3>My Applications</h3>
+        <div className="applications-list">
+          {applications.length === 0 && <p>No applications yet.</p>}
+          {applications.map((item) => (
+            <div className="application-item" key={item.id}>
+              <strong>{item.job_title}</strong>
+              <p>{item.company}</p>
+              <small>Status: {item.status}</small>
+            </div>
+          ))}
+        </div>
       </article>
       <article className="card chatbot">
         <h2>AI Job Assistant</h2>
@@ -363,7 +430,7 @@ function App() {
           <Route path="/" element={<HomePage />} />
           <Route path="/login" element={<LoginPage onLogin={handleLogin} />} />
           <Route path="/register" element={<RegisterPage />} />
-          <Route path="/jobs" element={<JobsPage />} />
+          <Route path="/jobs" element={<JobsPage token={token} />} />
           <Route
             path="/dashboard"
             element={
