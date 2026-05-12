@@ -213,3 +213,56 @@ def list_my_applications(authorization: str = Header(default=""), db: Session = 
 
     rows = db.query(Application).filter(Application.user_id == user_id).order_by(Application.id.desc()).all()
     return [{"id": row.id, "job_id": row.job_id, "status": row.status} for row in rows]
+from fastapi import FastAPI, Depends
+from fastapi.middleware.cors import CORSMiddleware
+from sqlalchemy.orm import Session
+
+from database import engine, SessionLocal
+from models import Base, Job
+
+app = FastAPI()
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+Base.metadata.create_all(bind=engine)
+
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+@app.get("/")
+def home():
+    return {"message": "Smart Job Platform API"}
+
+@app.get("/jobs")
+def get_jobs(db: Session = Depends(get_db)):
+    jobs = db.query(Job).all()
+    return jobs
+
+@app.post("/jobs")
+def create_job(
+    title: str,
+    company: str,
+    location: str,
+    db: Session = Depends(get_db)
+):
+    job = Job(
+        title=title,
+        company=company,
+        location=location
+    )
+
+    db.add(job)
+    db.commit()
+    db.refresh(job)
+
+    return job

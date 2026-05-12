@@ -1,0 +1,12 @@
+__pycache__/
+*.py[cod]
+venv/
+.venv/
+backend/venv/
+*.db
+*.sqlite
+*.sqlite3
+backend/jobs_backup_*.db
+.env
+backend/.env
+backend/.env.local
