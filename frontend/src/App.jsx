@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { BrowserRouter, Link, NavLink, Navigate, Route, Routes, useNavigate } from 'react-router-dom'
 import './App.css'
 
-const apiBaseUrl = import.meta.env.VITE_API_URL || 'http://localhost:8000'
+const apiBaseUrl = import.meta.env.VITE_API_URL || 'http://localhost:8001'
 
 const chatbotReply = (input, jobs) => {
   const text = input.toLowerCase()
@@ -269,6 +269,15 @@ function DashboardPage({ currentUser, token, onAuthInvalid }) {
   const [cvStatus, setCvStatus] = useState(null)
   const [uploadMessage, setUploadMessage] = useState('')
   const [uploadError, setUploadError] = useState('')
+  const [preferences, setPreferences] = useState({
+    country: '',
+    city: '',
+    work_mode: '',
+    job_type: '',
+    experience_level: '',
+  })
+  const [preferencesMessage, setPreferencesMessage] = useState('')
+  const [preferencesError, setPreferencesError] = useState('')
   const [matches, setMatches] = useState([])
   const [matchesError, setMatchesError] = useState('')
   const [authError, setAuthError] = useState('')
@@ -291,6 +300,13 @@ function DashboardPage({ currentUser, token, onAuthInvalid }) {
         }
         setVerifiedUser(data)
         setCvStatus(data.cv_status || null)
+        setPreferences({
+          country: data.preferences?.country || '',
+          city: data.preferences?.city || '',
+          work_mode: data.preferences?.work_mode || '',
+          job_type: data.preferences?.job_type || '',
+          experience_level: data.preferences?.experience_level || '',
+        })
       } catch (err) {
         setAuthError(err.message)
         onAuthInvalid()
@@ -346,6 +362,15 @@ function DashboardPage({ currentUser, token, onAuthInvalid }) {
         }
         setMatches(data.items || [])
         setCvStatus(data.cv_status || cvStatus)
+        if (data.preferences) {
+          setPreferences({
+            country: data.preferences.country || '',
+            city: data.preferences.city || '',
+            work_mode: data.preferences.work_mode || '',
+            job_type: data.preferences.job_type || '',
+            experience_level: data.preferences.experience_level || '',
+          })
+        }
       } catch (err) {
         setMatches([])
         setMatchesError(err.message)
@@ -419,6 +444,39 @@ function DashboardPage({ currentUser, token, onAuthInvalid }) {
     }
   }
 
+  const handlePreferencesSave = async (event) => {
+    event.preventDefault()
+    setPreferencesError('')
+    setPreferencesMessage('')
+    try {
+      const response = await fetch(`${apiBaseUrl}/profile/preferences`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify(preferences),
+      })
+      const data = await response.json()
+      if (!response.ok) {
+        throw new Error(data.detail || 'Could not save preferences')
+      }
+      setPreferencesMessage(data.message || 'Preferences saved')
+
+      const matchResponse = await fetch(`${apiBaseUrl}/matching`, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      })
+      const matchData = await matchResponse.json()
+      if (matchResponse.ok) {
+        setMatches(matchData.items || [])
+      }
+    } catch (err) {
+      setPreferencesError(err.message)
+    }
+  }
+
   return (
     <section className="dashboard-grid">
       <article className="card">
@@ -457,6 +515,55 @@ function DashboardPage({ currentUser, token, onAuthInvalid }) {
             Upload CV
           </button>
         </form>
+
+        <h3>Job Preferences</h3>
+        <form className="form-grid" onSubmit={handlePreferencesSave}>
+          <input
+            type="text"
+            placeholder="Preferred country"
+            value={preferences.country}
+            onChange={(event) => setPreferences((prev) => ({ ...prev, country: event.target.value }))}
+          />
+          <input
+            type="text"
+            placeholder="Preferred city"
+            value={preferences.city}
+            onChange={(event) => setPreferences((prev) => ({ ...prev, city: event.target.value }))}
+          />
+          <select
+            value={preferences.work_mode}
+            onChange={(event) => setPreferences((prev) => ({ ...prev, work_mode: event.target.value }))}
+          >
+            <option value="">Work mode</option>
+            <option value="remote">Remote</option>
+            <option value="on-site">On-site</option>
+            <option value="hybrid">Hybrid</option>
+          </select>
+          <select
+            value={preferences.job_type}
+            onChange={(event) => setPreferences((prev) => ({ ...prev, job_type: event.target.value }))}
+          >
+            <option value="">Job type</option>
+            <option value="full-time">Full-time</option>
+            <option value="part-time">Part-time</option>
+            <option value="contract">Contract</option>
+            <option value="internship">Internship</option>
+          </select>
+          <select
+            value={preferences.experience_level}
+            onChange={(event) => setPreferences((prev) => ({ ...prev, experience_level: event.target.value }))}
+          >
+            <option value="">Experience level</option>
+            <option value="junior">Junior</option>
+            <option value="mid">Mid</option>
+            <option value="senior">Senior</option>
+          </select>
+          {preferencesError && <p className="error">{preferencesError}</p>}
+          {preferencesMessage && <p className="success">{preferencesMessage}</p>}
+          <button type="submit" className="btn">
+            Save Preferences
+          </button>
+        </form>
       </article>
       <article className="card chatbot">
         <h2>AI Job Assistant</h2>
@@ -471,9 +578,37 @@ function DashboardPage({ currentUser, token, onAuthInvalid }) {
                 {item.company} - {item.location}
               </p>
               <small>Match Score: {item.score}%</small>
+              <small>Skills Score: {item.skill_score}% | Preference Score: {item.preference_score}%</small>
+              {item.missing_skills?.length > 0 && (
+                <p className="missing-skills">Top missing skills: {item.missing_skills.join(', ')}</p>
+              )}
+              {item.preference_matched?.length > 0 && (
+                <p className="pref-match">Preference match: {item.preference_matched.slice(0, 2).join(' | ')}</p>
+              )}
+              {item.preference_not_matched?.length > 0 && (
+                <p className="pref-mismatch">
+                  Preference mismatch: {item.preference_not_matched.slice(0, 2).join(' | ')}
+                </p>
+              )}
               {item.reasons?.map((reason, idx) => (
                 <p key={`${item.job_id}-reason-${idx}`}>{reason}</p>
               ))}
+            </div>
+          ))}
+        </div>
+        <h3>CV Improvement Tips</h3>
+        <div className="tips-list">
+          {matches.length === 0 && !matchesError && <p>Upload your CV to receive ATS improvement tips.</p>}
+          {matches.slice(0, 3).map((item) => (
+            <div className="tip-item" key={`tips-${item.job_id}`}>
+              <strong>
+                {item.title} ({item.score}%)
+              </strong>
+              <ol>
+                {(item.cv_improvement_tips || []).slice(0, 3).map((tip, idx) => (
+                  <li key={`tip-${item.job_id}-${idx}`}>{tip}</li>
+                ))}
+              </ol>
             </div>
           ))}
         </div>

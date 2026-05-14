@@ -213,6 +213,28 @@ main {
   margin: 4px 0;
 }
 
+.tips-list {
+  display: grid;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.tip-item {
+  border: 1px solid #dce7f4;
+  border-radius: 10px;
+  padding: 10px;
+  background: #fffaf0;
+}
+
+.tip-item ol {
+  margin: 8px 0 0 18px;
+  padding: 0;
+}
+
+.tip-item li {
+  margin: 4px 0;
+}
+
 .application-item {
   border: 1px solid #dce7f4;
   border-radius: 10px;
@@ -232,4 +254,24 @@ main {
   .hero h2 {
     font-size: 1.4rem;
   }
+}
+.missing-skills {
+  color: #9a4b00;
+  font-weight: 600;
+}
+.form-grid select {
+  border: 1px solid #bfd6eb;
+  border-radius: 10px;
+  padding: 10px;
+  background: #fff;
+}
+
+.pref-match {
+  color: #0a7f4f;
+  font-weight: 600;
+}
+
+.pref-mismatch {
+  color: #b04a00;
+  font-weight: 600;
 }
