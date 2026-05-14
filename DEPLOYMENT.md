@@ -1,60 +1,48 @@
-# Smart Job Platform Deployment (VPS)
+# Deployment Guide
 
-## One-command run
+## Backend on Render
 
-From project root:
+1. Push repo to GitHub.
+2. In Render, create PostgreSQL service.
+3. Create Web Service from repo using [render.yaml](C:/Users/ASUS/smart-job-platform/render.yaml).
+4. Set `CORS_ORIGINS` to your Vercel domain.
+5. Render runs:
+
+```bash
+alembic upgrade head && uvicorn main:app --host 0.0.0.0 --port $PORT
+```
+
+## Backend on Railway
+
+1. Create new Railway project from repo.
+2. Add PostgreSQL plugin.
+3. Set env vars:
+   - `DATABASE_URL` (Railway Postgres connection)
+   - `CORS_ORIGINS` (your Vercel URL)
+4. Railway uses [railway.toml](C:/Users/ASUS/smart-job-platform/railway.toml).
+
+## Frontend on Vercel
+
+1. Import the same repo into Vercel.
+2. Use [vercel.json](C:/Users/ASUS/smart-job-platform/vercel.json).
+3. Set env var:
+   - `VITE_API_URL=https://your-backend-domain`
+4. Deploy.
+
+## PWA Installability
+
+PWA config is in [vite.config.js](C:/Users/ASUS/smart-job-platform/frontend/vite.config.js) using `vite-plugin-pwa`.
+
+Install prompts will appear on supported browsers after deployment over HTTPS.
+
+## Local Production-like Stack
 
 ```bash
 docker compose up --build -d
 ```
 
-App URLs after start:
-- Frontend: `http://<VPS-IP>:5173`
-- Backend API: `http://<VPS-IP>:8001`
+## Health Checks
 
-## Prerequisites
-- Docker installed
-- Docker Compose plugin installed
-- Ports `5173` and `8001` open in firewall/security group
-
-## Update flow
-
-```bash
-git pull
-docker compose up --build -d
-```
-
-## Health checks
-
-```bash
-curl http://localhost:8001/
-curl http://localhost:5173/
-```
-
-## Logs
-
-```bash
-docker compose logs -f backend
-docker compose logs -f frontend
-```
-
-## Stop
-
-```bash
-docker compose down
-```
-
-## Local migration note
-For an existing local DB created before Alembic:
-
-```bash
-cd backend
-alembic stamp head
-```
-
-For normal schema updates:
-
-```bash
-cd backend
-alembic upgrade head
-```
+- Backend: `GET /` at `https://your-backend-domain/`
+- Frontend: open your Vercel URL
+- Swagger: `https://your-backend-domain/docs`

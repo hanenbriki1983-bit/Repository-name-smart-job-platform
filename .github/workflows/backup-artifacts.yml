@@ -1,0 +1,40 @@
+name: Backup Source Artifact
+
+on:
+  push:
+    branches: ["main"]
+  workflow_dispatch:
+  schedule:
+    - cron: "0 3 * * 1"
+
+jobs:
+  backup:
+    name: Create Clean Backup Artifact
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build source archive
+        run: |
+          ts=$(date +"%Y%m%d-%H%M%S")
+          archive="smart-job-platform-${ts}.tar.gz"
+          tar \
+            --exclude-vcs \
+            --exclude='./.git' \
+            --exclude='./frontend/node_modules' \
+            --exclude='./backend/venv' \
+            --exclude='./venv' \
+            --exclude='./frontend/dist' \
+            --exclude='./backend/__pycache__' \
+            --exclude='./backend/*.db' \
+            --exclude='./**/__pycache__' \
+            -czf "$archive" .
+          echo "ARCHIVE_NAME=$archive" >> $GITHUB_ENV
+
+      - name: Upload backup artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: source-backup-${{ github.run_number }}
+          path: ${{ env.ARCHIVE_NAME }}
+          retention-days: 14

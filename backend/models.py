@@ -15,6 +15,11 @@ class User(Base):
     password_hash = Column(String(255), nullable=False)
     cv_filename = Column(String(255), nullable=True)
     cv_text = Column(Text, nullable=True)
+    preferred_country = Column(String(120), nullable=True)
+    preferred_city = Column(String(120), nullable=True)
+    preferred_work_mode = Column(String(40), nullable=True)
+    preferred_job_type = Column(String(40), nullable=True)
+    preferred_experience_level = Column(String(40), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 
     applications = relationship("Application", back_populates="user")

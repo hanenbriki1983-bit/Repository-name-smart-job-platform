@@ -1,23 +1,56 @@
 # Smart Job Platform
 
-## Backend Run
+Production-ready full-stack app with:
+- FastAPI backend
+- React/Vite frontend
+- PostgreSQL database
+- Alembic migrations
+- PWA install support
+
+## Local Development
+
+### 1) Backend
 
 ```powershell
 cd backend
-.\venv\Scripts\Activate.ps1
 pip install -r requirements.txt
 alembic upgrade head
-uvicorn main:app --reload
+uvicorn main:app --reload --port 8001
 ```
 
-## Database Migrations (Alembic)
+### 2) Frontend
+
+```powershell
+cd frontend
+npm install
+npm run dev
+```
+
+Open: `http://localhost:5173`
+
+## Environment Variables
+
+### Backend (`backend/.env`)
+
+- `DATABASE_URL` (required in production)
+- `CORS_ORIGINS` (comma-separated)
+
+Example in [backend/.env.example](C:/Users/ASUS/smart-job-platform/backend/.env.example)
+
+### Frontend (`frontend/.env`)
+
+- `VITE_API_URL` (backend base URL)
+
+Example in [frontend/.env.example](C:/Users/ASUS/smart-job-platform/frontend/.env.example)
+
+## Database Migrations
 
 ```powershell
 cd backend
 alembic upgrade head
 ```
 
-Create a new migration after model changes:
+Create a new migration:
 
 ```powershell
 cd backend
@@ -25,32 +58,24 @@ alembic revision --autogenerate -m "describe_change"
 alembic upgrade head
 ```
 
-## Core API Endpoints
+## Docker Compose (PostgreSQL)
 
-- `GET /` Home
-- `POST /auth/register` Register
-- `POST /auth/login` Login
-- `GET /dashboard` Dashboard summary (auth)
-- `GET /companies` List companies
-- `POST /companies` Create company
-- `GET /jobs` List/search jobs (`?q=`)
-- `POST /jobs` Create job
-- `POST /applications` Apply with CV upload (auth, multipart)
-- `GET /applications` My applications (auth)
-- `POST /ai/suggest-jobs` AI-like job matching by skills
+```bash
+docker compose up --build -d
+```
 
-## SQL Database
+Services:
+- Postgres: `localhost:5432`
+- Backend: `localhost:8001`
+- Frontend: `localhost:5173`
 
-Uses SQLite file: `backend/jobs.db` with tables:
-- `users`
-- `companies`
-- `jobs`
-- `applications`
+## Deploy
 
-## Frontend Pages To Build
+- Render backend config: [render.yaml](C:/Users/ASUS/smart-job-platform/render.yaml)
+- Railway backend config: [railway.toml](C:/Users/ASUS/smart-job-platform/railway.toml)
+- Vercel frontend config: [vercel.json](C:/Users/ASUS/smart-job-platform/vercel.json)
+- Process fallback: [Procfile](C:/Users/ASUS/smart-job-platform/Procfile)
 
-- Home
-- Login
-- Register
-- Jobs
-- Dashboard
+## PWA
+
+PWA is enabled via `vite-plugin-pwa` with auto-update service worker and installable manifest.

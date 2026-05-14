@@ -1,10 +1,27 @@
 services:
+  db:
+    image: postgres:16
+    container_name: smart-job-db
+    environment:
+      POSTGRES_USER: smartjob
+      POSTGRES_PASSWORD: smartjob
+      POSTGRES_DB: smartjob
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
   backend:
     build:
       context: ./backend
     container_name: smart-job-backend
+    environment:
+      DATABASE_URL: postgresql+psycopg://smartjob:smartjob@db:5432/smartjob
+      CORS_ORIGINS: http://localhost:5173
     ports:
       - "8001:8001"
+    depends_on:
+      - db
 
   frontend:
     build:
@@ -16,3 +33,6 @@ services:
       - "5173:80"
     depends_on:
       - backend
+
+volumes:
+  postgres_data:

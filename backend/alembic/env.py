@@ -1,6 +1,7 @@
 from logging.config import fileConfig
 from pathlib import Path
 import sys
+import os
 
 from alembic import context
 from sqlalchemy import engine_from_config, pool
@@ -11,6 +12,13 @@ from database import Base
 from models import Application, AuthToken, Job, User
 
 config = context.config
+database_url = os.getenv("DATABASE_URL")
+if database_url:
+    if database_url.startswith("postgres://"):
+        database_url = database_url.replace("postgres://", "postgresql+psycopg://", 1)
+    elif database_url.startswith("postgresql://"):
+        database_url = database_url.replace("postgresql://", "postgresql+psycopg://", 1)
+    config.set_main_option("sqlalchemy.url", database_url)
 
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
