@@ -1,12 +1,54 @@
+# OS / Editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Python
 __pycache__/
 *.py[cod]
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# Virtual environments
 venv/
 .venv/
+env/
 backend/venv/
+frontend/venv/
+
+# Node / Frontend
+node_modules/
+frontend/node_modules/
+dist/
+frontend/dist/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Build / runtime artifacts
+*.log
+*.pid
+*.seed
+*.out
+*.err
+
+# Databases / local state
 *.db
 *.sqlite
 *.sqlite3
 backend/jobs_backup_*.db
+backend/alembic/versions/__pycache__/
+
+# Env files
 .env
+.env.*
 backend/.env
 backend/.env.local
+frontend/.env.local
