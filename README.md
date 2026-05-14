@@ -6,7 +6,23 @@
 cd backend
 .\venv\Scripts\Activate.ps1
 pip install -r requirements.txt
+alembic upgrade head
 uvicorn main:app --reload
+```
+
+## Database Migrations (Alembic)
+
+```powershell
+cd backend
+alembic upgrade head
+```
+
+Create a new migration after model changes:
+
+```powershell
+cd backend
+alembic revision --autogenerate -m "describe_change"
+alembic upgrade head
 ```
 
 ## Core API Endpoints

@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { BrowserRouter, Link, NavLink, Navigate, Route, Routes, useNavigate } from 'react-router-dom'
 import './App.css'
 
-const apiBaseUrl = 'http://127.0.0.1:8001'
+const apiBaseUrl = import.meta.env.VITE_API_URL || 'http://localhost:8000'
 
 const chatbotReply = (input, jobs) => {
   const text = input.toLowerCase()
@@ -265,6 +265,12 @@ function DashboardPage({ currentUser, token, onAuthInvalid }) {
   const [jobs, setJobs] = useState([])
   const [applications, setApplications] = useState([])
   const [verifiedUser, setVerifiedUser] = useState(currentUser)
+  const [cvFile, setCvFile] = useState(null)
+  const [cvStatus, setCvStatus] = useState(null)
+  const [uploadMessage, setUploadMessage] = useState('')
+  const [uploadError, setUploadError] = useState('')
+  const [matches, setMatches] = useState([])
+  const [matchesError, setMatchesError] = useState('')
   const [authError, setAuthError] = useState('')
   const [messages, setMessages] = useState([
     { role: 'bot', content: 'Hi! Ask me for frontend, python, or remote jobs.' },
@@ -284,6 +290,7 @@ function DashboardPage({ currentUser, token, onAuthInvalid }) {
           throw new Error(data.detail || 'Session validation failed')
         }
         setVerifiedUser(data)
+        setCvStatus(data.cv_status || null)
       } catch (err) {
         setAuthError(err.message)
         onAuthInvalid()
@@ -324,6 +331,30 @@ function DashboardPage({ currentUser, token, onAuthInvalid }) {
     loadApplications()
   }, [token])
 
+  useEffect(() => {
+    const loadMatches = async () => {
+      try {
+        setMatchesError('')
+        const response = await fetch(`${apiBaseUrl}/matching`, {
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+        })
+        const data = await response.json()
+        if (!response.ok) {
+          throw new Error(data.detail || 'Could not load AI matches')
+        }
+        setMatches(data.items || [])
+        setCvStatus(data.cv_status || cvStatus)
+      } catch (err) {
+        setMatches([])
+        setMatchesError(err.message)
+      }
+    }
+
+    loadMatches()
+  }, [token])
+
   const stats = useMemo(
     () => ({
       totalJobs: jobs.length,
@@ -341,6 +372,53 @@ function DashboardPage({ currentUser, token, onAuthInvalid }) {
     setInput('')
   }
 
+  const handleCvUpload = async (event) => {
+    event.preventDefault()
+    if (!cvFile) {
+      setUploadError('Please choose a .txt or .pdf file first.')
+      return
+    }
+
+    setUploadError('')
+    setUploadMessage('')
+
+    const formData = new FormData()
+    formData.append('file', cvFile)
+
+    try {
+      const response = await fetch(`${apiBaseUrl}/profile/cv`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+        body: formData,
+      })
+
+      const data = await response.json()
+      if (!response.ok) {
+        throw new Error(data.detail || 'CV upload failed')
+      }
+
+      setUploadMessage(data.message || 'CV uploaded successfully')
+      setCvStatus(data.cv_status || null)
+      setCvFile(null)
+
+      const matchResponse = await fetch(`${apiBaseUrl}/matching`, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      })
+      const matchData = await matchResponse.json()
+      if (!matchResponse.ok) {
+        throw new Error(matchData.detail || 'Could not refresh AI matches')
+      }
+      setMatches(matchData.items || [])
+      setMatchesError('')
+    } catch (err) {
+      setUploadError(err.message)
+    }
+  }
+
   return (
     <section className="dashboard-grid">
       <article className="card">
@@ -351,6 +429,8 @@ function DashboardPage({ currentUser, token, onAuthInvalid }) {
         <p>Total jobs: {stats.totalJobs}</p>
         <p>Remote jobs: {stats.remoteJobs}</p>
         <p>My applications: {stats.applicationsCount}</p>
+        <p>CV uploaded: {cvStatus?.has_cv ? 'Yes' : 'No'}</p>
+        {cvStatus?.cv_filename && <p>CV file: {cvStatus.cv_filename}</p>}
 
         <h3>My Applications</h3>
         <div className="applications-list">
@@ -363,9 +443,40 @@ function DashboardPage({ currentUser, token, onAuthInvalid }) {
             </div>
           ))}
         </div>
+
+        <h3>Upload CV</h3>
+        <form className="form-grid" onSubmit={handleCvUpload}>
+          <input
+            type="file"
+            accept=".txt,.pdf"
+            onChange={(event) => setCvFile(event.target.files?.[0] || null)}
+          />
+          {uploadError && <p className="error">{uploadError}</p>}
+          {uploadMessage && <p className="success">{uploadMessage}</p>}
+          <button type="submit" className="btn">
+            Upload CV
+          </button>
+        </form>
       </article>
       <article className="card chatbot">
         <h2>AI Job Assistant</h2>
+        <h3>AI Matching</h3>
+        {matchesError && <p className="error">{matchesError}</p>}
+        <div className="matches-list">
+          {matches.length === 0 && !matchesError && <p>No AI matches yet. Upload your CV first.</p>}
+          {matches.slice(0, 3).map((item) => (
+            <div className="match-item" key={item.job_id}>
+              <strong>{item.title}</strong>
+              <p>
+                {item.company} - {item.location}
+              </p>
+              <small>Match Score: {item.score}%</small>
+              {item.reasons?.map((reason, idx) => (
+                <p key={`${item.job_id}-reason-${idx}`}>{reason}</p>
+              ))}
+            </div>
+          ))}
+        </div>
         <div className="chat-stream">
           {messages.map((message, index) => (
             <p key={`${message.role}-${index}`} className={`bubble ${message.role}`}>
@@ -412,7 +523,21 @@ function App() {
     localStorage.setItem('auth_user', JSON.stringify(user))
   }
 
-  const handleLogout = () => {
+  const handleLogout = async () => {
+    const currentToken = localStorage.getItem('auth_token')
+    if (currentToken) {
+      try {
+        await fetch(`${apiBaseUrl}/auth/logout`, {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${currentToken}`,
+          },
+        })
+      } catch {
+        // Ignore network/logout errors and still clear local session.
+      }
+    }
+
     setToken('')
     setCurrentUser(null)
     localStorage.removeItem('auth_token')

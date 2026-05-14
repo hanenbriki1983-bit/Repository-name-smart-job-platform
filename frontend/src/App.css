@@ -196,6 +196,23 @@ main {
   margin-top: 10px;
 }
 
+.matches-list {
+  display: grid;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.match-item {
+  border: 1px solid #dce7f4;
+  border-radius: 10px;
+  padding: 10px;
+  background: #f4faff;
+}
+
+.match-item p {
+  margin: 4px 0;
+}
+
 .application-item {
   border: 1px solid #dce7f4;
   border-radius: 10px;
