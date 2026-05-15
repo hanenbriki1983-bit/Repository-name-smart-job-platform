@@ -11,6 +11,7 @@ from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
 from database import SessionLocal
+from job_fetcher import fetch_real_jobs
 from models import Application, AuthToken, Job, User
 
 app = FastAPI()
@@ -43,6 +44,7 @@ class ApplicationPayload(BaseModel):
 class PreferencesPayload(BaseModel):
     country: str | None = None
     city: str | None = None
+    job_title: str | None = None
     work_mode: str | None = None
     job_type: str | None = None
     experience_level: str | None = None
@@ -100,6 +102,10 @@ ROLE_SKILL_HINTS = {
     "backend developer": {"python", "java", "sql", "docker", "api", "git"},
 }
 
+DEMO_EMAIL = "demo@smartjob.local"
+DEMO_PASSWORD = "demo1234"
+DEMO_NAME = "Demo Presenter"
+
 
 def get_db():
     db = SessionLocal()
@@ -132,11 +138,127 @@ def seed_jobs(db: Session) -> None:
 
     db.add_all(
         [
-            Job(title="Frontend Developer", company="Google", location="Germany"),
-            Job(title="Python Developer", company="Spotify", location="Remote"),
+            Job(
+                source="seed",
+                external_id="seed-frontend",
+                title="Frontend Developer",
+                company="Google",
+                location="Germany",
+                country="Germany",
+                city="Berlin",
+                work_mode="on-site",
+                apply_url="https://careers.google.com/",
+                skills_csv="javascript,react,css,html",
+            ),
+            Job(
+                source="seed",
+                external_id="seed-python",
+                title="Python Developer",
+                company="Spotify",
+                location="Remote",
+                country="Germany",
+                city="Berlin",
+                work_mode="remote",
+                apply_url="https://www.lifeatspotify.com/jobs",
+                skills_csv="python,fastapi,sql,docker",
+            ),
         ]
     )
     db.commit()
+
+
+def is_demo_mode_enabled() -> bool:
+    return os.getenv("DEMO_MODE", "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def ensure_demo_user_and_data(db: Session) -> None:
+    if not is_demo_mode_enabled():
+        return
+
+    demo_user = db.query(User).filter(User.email == DEMO_EMAIL).first()
+    if not demo_user:
+        demo_user = User(
+            name=DEMO_NAME,
+            email=DEMO_EMAIL,
+            password_hash=hash_password(DEMO_PASSWORD),
+            cv_filename="demo_cv.txt",
+            cv_text=(
+                "Senior Python developer with FastAPI, SQL, Docker, AWS and React experience. "
+                "Built backend APIs and dashboards with measurable impact."
+            ),
+            preferred_country="Germany",
+            preferred_city="Berlin",
+            preferred_job_title="Python Developer",
+            preferred_work_mode="remote",
+            preferred_job_type="full-time",
+            preferred_experience_level="mid",
+        )
+        db.add(demo_user)
+        db.commit()
+        db.refresh(demo_user)
+    else:
+        changed = False
+        if not (demo_user.cv_text or "").strip():
+            demo_user.cv_filename = "demo_cv.txt"
+            demo_user.cv_text = (
+                "Senior Python developer with FastAPI, SQL, Docker, AWS and React experience. "
+                "Built backend APIs and dashboards with measurable impact."
+            )
+            changed = True
+        if not demo_user.preferred_country:
+            demo_user.preferred_country = "Germany"
+            changed = True
+        if not demo_user.preferred_city:
+            demo_user.preferred_city = "Berlin"
+            changed = True
+        if not demo_user.preferred_job_title:
+            demo_user.preferred_job_title = "Python Developer"
+            changed = True
+        if not demo_user.preferred_work_mode:
+            demo_user.preferred_work_mode = "remote"
+            changed = True
+        if changed:
+            db.add(demo_user)
+            db.commit()
+
+
+def parse_job_skills(job: Job) -> set[str]:
+    base = tokenize(f"{job.title} {job.description or ''}")
+    csv_tokens = tokenize((job.skills_csv or "").replace(",", " "))
+    return normalize_skill_tokens(base | csv_tokens)
+
+
+def upsert_fetched_jobs(db: Session, jobs: list[dict]) -> int:
+    saved = 0
+    for row in jobs:
+        external_id = (row.get("external_id") or "").strip()
+        source = (row.get("source") or "external").strip().lower()
+        existing = None
+        if external_id:
+            existing = (
+                db.query(Job)
+                .filter(Job.source == source, Job.external_id == external_id)
+                .first()
+            )
+
+        if not existing:
+            existing = Job(source=source, external_id=external_id or None)
+            db.add(existing)
+
+        existing.title = (row.get("title") or "Unknown Role")[:160]
+        existing.company = (row.get("company") or "Unknown Company")[:160]
+        existing.location = (row.get("location") or "Unknown")[:120]
+        existing.country = (row.get("country") or "")[:120] or None
+        existing.city = (row.get("city") or "")[:120] or None
+        existing.work_mode = (row.get("work_mode") or "")[:40] or None
+        existing.job_type = (row.get("job_type") or "")[:40] or None
+        existing.apply_url = (row.get("apply_url") or "")[:600] or None
+        existing.description = (row.get("description") or "")[:4000] or None
+        existing.skills_csv = (row.get("skills_csv") or "")[:1200] or None
+        saved += 1
+
+    db.commit()
+    return saved
 
 
 def extract_cv_text(file: UploadFile) -> str:
@@ -280,7 +402,10 @@ def compute_match(job: Job, cv_text: str, preferences: dict | None = None) -> di
     score = min(int((skill_score_total * 0.75) + (preference_score * 0.25)), 100)
 
     role_hints = get_role_skill_hints(job)
-    missing_skills = sorted(skill for skill in role_hints if skill not in weighted_cv)
+    job_skill_tokens = parse_job_skills(job)
+    expected_skills = sorted(role_hints | {token for token in job_skill_tokens if token in SKILL_KEYWORDS})
+    matched_skills = sorted(skill for skill in expected_skills if skill in weighted_cv)
+    missing_skills = sorted(skill for skill in expected_skills if skill not in weighted_cv)
     cv_improvement_tips = build_cv_improvement_tips(job, score, missing_skills)
 
     reasons = []
@@ -298,13 +423,21 @@ def compute_match(job: Job, cv_text: str, preferences: dict | None = None) -> di
 
     return {
         "job_id": job.id,
+        "source": job.source,
+        "external_id": job.external_id,
         "title": job.title,
         "company": job.company,
         "location": job.location,
+        "country": job.country,
+        "city": job.city,
+        "work_mode": job.work_mode,
+        "job_type": job.job_type,
+        "apply_url": job.apply_url,
         "score": score,
         "skill_score": skill_score_total,
         "preference_score": preference_score,
         "reasons": reasons,
+        "matched_skills": matched_skills[:8],
         "missing_skills": missing_skills[:5],
         "cv_improvement_tips": cv_improvement_tips,
         "preference_reasons": preference_alignment["reasons"],
@@ -333,6 +466,7 @@ def get_preferences(user: User) -> dict:
     return {
         "country": user.preferred_country,
         "city": user.preferred_city,
+        "job_title": user.preferred_job_title,
         "work_mode": user.preferred_work_mode,
         "job_type": user.preferred_job_type,
         "experience_level": user.preferred_experience_level,
@@ -389,6 +523,7 @@ def compute_preference_alignment(job: Job, preferences: dict | None) -> dict:
     work_mode = (preferences.get("work_mode") or "").strip().lower()
     job_type = (preferences.get("job_type") or "").strip().lower()
     exp_level = (preferences.get("experience_level") or "").strip().lower()
+    preferred_title = (preferences.get("job_title") or "").strip().lower()
 
     if country:
         if country in location_blob:
@@ -402,6 +537,12 @@ def compute_preference_alignment(job: Job, preferences: dict | None) -> dict:
             matched.append(f"City matches ({preferences['city']})")
         else:
             not_matched.append(f"City mismatch (wanted {preferences['city']})")
+    if preferred_title:
+        if preferred_title in job.title.lower():
+            score += 8
+            matched.append(f"Job title matches ({preferences['job_title']})")
+        else:
+            not_matched.append(f"Job title mismatch (wanted {preferences['job_title']})")
     if work_mode:
         detected_mode = infer_job_work_mode(job)
         if detected_mode == work_mode:
@@ -442,6 +583,7 @@ def startup_event():
     db = SessionLocal()
     try:
         seed_jobs(db)
+        ensure_demo_user_and_data(db)
     except OperationalError as exc:
         raise RuntimeError(
             "Database schema is not ready. Run `alembic upgrade head` in backend/ first."
@@ -461,9 +603,11 @@ def get_jobs(db: Session = Depends(get_db)):
     return [
         {
             "id": job.id,
+            "source": job.source,
             "title": job.title,
             "company": job.company,
             "location": job.location,
+            "apply_url": job.apply_url,
         }
         for job in rows
     ]
@@ -486,6 +630,25 @@ def login(payload: LoginPayload, db: Session = Depends(get_db)):
     user = db.query(User).filter(User.email == payload.email.lower()).first()
     if not user or user.password_hash != hash_password(payload.password):
         raise HTTPException(status_code=401, detail="Invalid credentials")
+
+    token = secrets.token_hex(16)
+    auth_token = AuthToken(token=token, user_id=user.id)
+    db.add(auth_token)
+    db.commit()
+    return {"token": token, "user": {"id": user.id, "name": user.name, "email": user.email}}
+
+
+@app.post("/auth/demo-login")
+def demo_login(db: Session = Depends(get_db)):
+    if not is_demo_mode_enabled():
+        raise HTTPException(status_code=403, detail="Demo mode is disabled")
+
+    user = db.query(User).filter(User.email == DEMO_EMAIL).first()
+    if not user:
+        ensure_demo_user_and_data(db)
+        user = db.query(User).filter(User.email == DEMO_EMAIL).first()
+    if not user:
+        raise HTTPException(status_code=500, detail="Demo user could not be created")
 
     token = secrets.token_hex(16)
     auth_token = AuthToken(token=token, user_id=user.id)
@@ -608,6 +771,7 @@ def save_preferences(
     user = get_current_user(authorization, db)
     user.preferred_country = (payload.country or "").strip() or None
     user.preferred_city = (payload.city or "").strip() or None
+    user.preferred_job_title = (payload.job_title or "").strip() or None
     user.preferred_work_mode = (payload.work_mode or "").strip().lower() or None
     user.preferred_job_type = (payload.job_type or "").strip().lower() or None
     user.preferred_experience_level = (payload.experience_level or "").strip().lower() or None
@@ -623,7 +787,21 @@ def get_matching(authorization: str = Header(default=""), db: Session = Depends(
     if not cv_text:
         raise HTTPException(status_code=400, detail="Upload your CV first to get AI matches")
 
-    jobs = db.query(Job).order_by(Job.id.asc()).all()
     preferences = get_preferences(user)
+    fetched_count = 0
+    try:
+        fetched_jobs = fetch_real_jobs(preferences, cv_text, limit=30)
+        if fetched_jobs:
+            fetched_count = upsert_fetched_jobs(db, fetched_jobs)
+    except Exception:
+        # Keep matching available even if provider credentials/network are missing.
+        fetched_count = 0
+
+    jobs = db.query(Job).order_by(Job.id.desc()).limit(200).all()
     ranked = sorted((compute_match(job, cv_text, preferences) for job in jobs), key=lambda row: row["score"], reverse=True)
-    return {"items": ranked[:10], "cv_status": get_cv_status(user), "preferences": preferences}
+    return {
+        "items": ranked[:10],
+        "cv_status": get_cv_status(user),
+        "preferences": preferences,
+        "fetched_jobs_count": fetched_count,
+    }

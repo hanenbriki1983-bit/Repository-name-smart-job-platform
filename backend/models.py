@@ -17,6 +17,7 @@ class User(Base):
     cv_text = Column(Text, nullable=True)
     preferred_country = Column(String(120), nullable=True)
     preferred_city = Column(String(120), nullable=True)
+    preferred_job_title = Column(String(160), nullable=True)
     preferred_work_mode = Column(String(40), nullable=True)
     preferred_job_type = Column(String(40), nullable=True)
     preferred_experience_level = Column(String(40), nullable=True)
@@ -30,9 +31,17 @@ class Job(Base):
     __tablename__ = "jobs"
 
     id = Column(Integer, primary_key=True, index=True)
+    source = Column(String(40), nullable=False, default="seed")
+    external_id = Column(String(160), nullable=True, index=True)
     title = Column(String(160), nullable=False)
     company = Column(String(160), nullable=False)
     location = Column(String(120), nullable=False)
+    country = Column(String(120), nullable=True)
+    city = Column(String(120), nullable=True)
+    work_mode = Column(String(40), nullable=True)
+    job_type = Column(String(40), nullable=True)
+    apply_url = Column(String(600), nullable=True)
+    skills_csv = Column(Text, nullable=True)
     description = Column(Text, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 
