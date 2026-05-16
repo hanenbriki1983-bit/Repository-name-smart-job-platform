@@ -8,3 +8,4 @@ email-validator
 pypdf
 alembic
 psycopg[binary]
+python-dotenv

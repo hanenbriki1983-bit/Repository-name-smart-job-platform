@@ -34,6 +34,9 @@ Open: `http://localhost:5173`
 
 - `DATABASE_URL` (required in production)
 - `CORS_ORIGINS` (comma-separated)
+- `JOB_API_PROVIDER` (`adzuna` or `jsearch`)
+- `ADZUNA_APP_ID`, `ADZUNA_APP_KEY` (for Adzuna provider)
+- `RAPIDAPI_KEY` (for JSearch provider)
 
 Example in [backend/.env.example](C:/Users/ASUS/smart-job-platform/backend/.env.example)
 

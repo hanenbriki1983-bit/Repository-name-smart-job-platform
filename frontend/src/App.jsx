@@ -1,52 +1,563 @@
 import { useEffect, useMemo, useState } from 'react'
 import { BrowserRouter, Link, NavLink, Navigate, Route, Routes, useNavigate } from 'react-router-dom'
 import './App.css'
+import heroImage from './assets/hero.png'
 
-const apiBaseUrl = import.meta.env.VITE_API_URL || 'http://localhost:8001'
+const configuredApiUrl = import.meta.env.VITE_API_URL?.trim()
+const runtimeHost = typeof window !== 'undefined' ? window.location.hostname : 'localhost'
+const localApiCandidates = [`http://${runtimeHost}:8001`, `http://${runtimeHost}:8000`]
 
-const chatbotReply = (input, jobs) => {
-  const text = input.toLowerCase()
-  if (text.includes('frontend')) {
-    const match = jobs.find((job) => job.title.toLowerCase().includes('frontend'))
-    return match
-      ? `Try "${match.title}" at ${match.company} in ${match.location}.`
-      : 'I could not find a frontend role right now.'
-  }
-
-  if (text.includes('python')) {
-    const match = jobs.find((job) => job.title.toLowerCase().includes('python'))
-    return match
-      ? `Try "${match.title}" at ${match.company} in ${match.location}.`
-      : 'I could not find a python role right now.'
-  }
-
-  if (text.includes('remote')) {
-    const remoteJobs = jobs.filter((job) => job.location.toLowerCase().includes('remote'))
-    if (remoteJobs.length > 0) {
-      return `Remote option: ${remoteJobs[0].title} at ${remoteJobs[0].company}.`
-    }
-    return 'No remote jobs are listed yet.'
-  }
-
-  return 'Ask me about frontend, python, or remote jobs and I will suggest one.'
+const I18N = {
+  en: {
+    appTitle: 'Smart Job Platform',
+    home: 'Home',
+    login: 'Login',
+    register: 'Register',
+    jobs: 'Jobs',
+    chatbot: 'Chatbot',
+    dashboard: 'Dashboard',
+    logout: 'Logout',
+    heroBadge: 'Find your next career move',
+    heroTitle: 'Jobs, applications, and AI suggestions in one place.',
+    browseJobs: 'Browse Jobs',
+    createAccount: 'Create Account',
+    email: 'Email',
+    password: 'Password',
+    signIn: 'Sign In',
+    signingIn: 'Signing in...',
+    useDemo: 'Use Demo Login',
+    loadingDemo: 'Loading demo...',
+    fullName: 'Full name',
+    creating: 'Creating...',
+    jobsTitle: 'Jobs',
+    uploadCv: 'Upload CV',
+    searchManual: 'Search manually',
+    whatJob: 'What job are you looking for?',
+    countryOptional: 'Country (optional)',
+    chooseCountryFirst: 'Choose country first',
+    noMatchingJobs: 'No matching jobs found.',
+    noMatchingJobsBroader: 'No matching jobs found. Try a broader search.',
+    showingJobs: 'Showing',
+    jobsCountSuffix: 'jobs',
+    noFreshMatchingJobs: 'No fresh matching jobs found.',
+    radius: 'Radius',
+    km5: '5 km',
+    km10: '10 km',
+    km20: '20 km',
+    km30: '30 km',
+    km50: '50 km',
+    km100: '100 km',
+    cityOptional: 'City (optional)',
+    cityPlaceholder: 'City (optional) e.g. Berlin, Munich, Hamburg',
+    search: 'Search',
+    searching: 'Searching...',
+    advancedFilters: 'Advanced filters (optional)',
+    workMode: 'Work mode',
+    remote: 'Remote',
+    hybrid: 'Hybrid',
+    onsite: 'On-site',
+    jobType: 'Job type',
+    fullTime: 'Full-time',
+    partTime: 'Part-time',
+    contract: 'Contract',
+    internship: 'Internship',
+    experienceLevel: 'Experience level',
+    junior: 'Junior',
+    mid: 'Mid',
+    senior: 'Senior',
+    loadMore: 'Load More',
+    loadingMore: 'Loading more...',
+    applyNow: 'Apply Now',
+    applyEmployer: 'Apply on employer site',
+    matchScore: 'Match Score',
+    source: 'Source',
+    dashboardTitle: 'Dashboard',
+    myApplications: 'My Applications',
+    noApplications: 'No applications yet.',
+    cvUploaded: 'CV uploaded',
+    yes: 'Yes',
+    no: 'No',
+    quickSearch: 'Quick Search',
+    searchAll: 'Search all',
+    jobRecommendations: 'Job Recommendations',
+    aiMatching: 'AI Matching',
+    noMatches: 'No AI matches yet. Upload your CV first.',
+    didYouMean: 'Did you mean',
+    language: 'Language',
+    loadingJobs: 'Loading jobs...',
+    uploadCvHint: 'Upload your CV from Dashboard to enable CV-based matching.',
+    goToDashboardUpload: 'Go to Dashboard Upload',
+    pleaseLoginApply: 'Please login first to apply.',
+    applicationSuccess: 'Application submitted successfully.',
+    welcome: 'Welcome',
+    totalJobs: 'Total jobs',
+    remoteJobs: 'Remote jobs',
+    userFallback: 'User',
+    status: 'Status',
+    cvFile: 'CV file',
+    addApiKeysHint: 'Add API keys to see many live jobs.',
+    realJobsFetched: 'Real jobs fetched',
+    registrationComplete: 'Registration complete. You can login now.',
+    loginFailed: 'Login failed',
+    demoLoginFailed: 'Demo login failed',
+    registrationFailed: 'Registration failed',
+    applyFailed: 'Apply failed',
+    demoJobNotice: 'This is a sample demo job for presentation only.',
+    couldNotLoadJobs: 'Could not load jobs.',
+    couldNotLoadAiMatches: 'Could not load AI matches',
+    uploadCvButton: 'Upload CV',
+    noCityPlaceholder: 'Berlin, Munich, Hamburg...',
+    autoRefresh: 'Auto refresh',
+    off: 'Off',
+    everyMinute: 'Every 1 minute',
+    everyHour: 'Every 1 hour',
+    everyDay: 'Every 1 day',
+    nearbyCitiesHint: 'Nearby cities are included for this location.',
+    allCountries: 'All countries',
+  },
+  de: {
+    appTitle: 'Smart Job Plattform',
+    home: 'Start',
+    login: 'Anmelden',
+    register: 'Registrieren',
+    jobs: 'Jobs',
+    chatbot: 'Chatbot',
+    dashboard: 'Dashboard',
+    logout: 'Abmelden',
+    heroBadge: 'Finde deinen nächsten Karriereschritt',
+    heroTitle: 'Jobs, Bewerbungen und KI-Empfehlungen an einem Ort.',
+    browseJobs: 'Jobs durchsuchen',
+    createAccount: 'Konto erstellen',
+    email: 'E-Mail',
+    password: 'Passwort',
+    signIn: 'Anmelden',
+    signingIn: 'Anmeldung...',
+    useDemo: 'Demo-Login',
+    loadingDemo: 'Demo wird geladen...',
+    fullName: 'Vollständiger Name',
+    creating: 'Erstellen...',
+    jobsTitle: 'Jobs',
+    uploadCv: 'Lebenslauf hochladen',
+    searchManual: 'Manuell suchen',
+    whatJob: 'Welchen Job suchst du?',
+    countryOptional: 'Land (optional)',
+    chooseCountryFirst: 'Wähle zuerst ein Land',
+    noMatchingJobs: 'Keine passenden Jobs gefunden.',
+    noMatchingJobsBroader: 'Keine passenden Jobs gefunden. Versuche eine breitere Suche.',
+    showingJobs: 'Angezeigt werden',
+    jobsCountSuffix: 'Jobs',
+    noFreshMatchingJobs: 'Keine aktuellen passenden Jobs gefunden.',
+    radius: 'Radius',
+    km5: '5 km',
+    km10: '10 km',
+    km20: '20 km',
+    km30: '30 km',
+    km50: '50 km',
+    km100: '100 km',
+    cityOptional: 'Stadt (optional)',
+    cityPlaceholder: 'Stadt (optional) z. B. Berlin, München, Hamburg',
+    search: 'Suchen',
+    searching: 'Suche...',
+    advancedFilters: 'Erweiterte Filter (optional)',
+    workMode: 'Arbeitsmodus',
+    remote: 'Remote',
+    hybrid: 'Hybrid',
+    onsite: 'Vor Ort',
+    jobType: 'Jobtyp',
+    fullTime: 'Vollzeit',
+    partTime: 'Teilzeit',
+    contract: 'Vertrag',
+    internship: 'Praktikum',
+    experienceLevel: 'Erfahrungsniveau',
+    junior: 'Junior',
+    mid: 'Mid',
+    senior: 'Senior',
+    loadMore: 'Mehr laden',
+    loadingMore: 'Lade mehr...',
+    applyNow: 'Jetzt bewerben',
+    applyEmployer: 'Beim Arbeitgeber bewerben',
+    matchScore: 'Match-Score',
+    source: 'Quelle',
+    dashboardTitle: 'Dashboard',
+    myApplications: 'Meine Bewerbungen',
+    noApplications: 'Noch keine Bewerbungen.',
+    cvUploaded: 'Lebenslauf hochgeladen',
+    yes: 'Ja',
+    no: 'Nein',
+    quickSearch: 'Schnellsuche',
+    searchAll: 'Suche in ganz',
+    jobRecommendations: 'Job-Empfehlungen',
+    aiMatching: 'KI-Matching',
+    noMatches: 'Noch keine KI-Matches. Lade zuerst deinen Lebenslauf hoch.',
+    didYouMean: 'Meintest du',
+    language: 'Sprache',
+    loadingJobs: 'Jobs werden geladen...',
+    uploadCvHint: 'Lade deinen Lebenslauf im Dashboard hoch, um CV-basiertes Matching zu aktivieren.',
+    goToDashboardUpload: 'Zum Dashboard-Upload',
+    pleaseLoginApply: 'Bitte melde dich zuerst an, um dich zu bewerben.',
+    applicationSuccess: 'Bewerbung erfolgreich gesendet.',
+    welcome: 'Willkommen',
+    totalJobs: 'Gesamtanzahl Jobs',
+    remoteJobs: 'Remote-Jobs',
+    userFallback: 'Nutzer',
+    status: 'Status',
+    cvFile: 'CV-Datei',
+    addApiKeysHint: 'Füge API-Schlüssel hinzu, um viele Live-Jobs zu sehen.',
+    realJobsFetched: 'Live-Jobs geladen',
+    registrationComplete: 'Registrierung abgeschlossen. Du kannst dich jetzt anmelden.',
+    loginFailed: 'Anmeldung fehlgeschlagen',
+    demoLoginFailed: 'Demo-Anmeldung fehlgeschlagen',
+    registrationFailed: 'Registrierung fehlgeschlagen',
+    applyFailed: 'Bewerbung fehlgeschlagen',
+    demoJobNotice: 'Dies ist ein Demo-Beispieljob nur zur Präsentation.',
+    couldNotLoadJobs: 'Jobs konnten nicht geladen werden.',
+    couldNotLoadAiMatches: 'KI-Matches konnten nicht geladen werden',
+    uploadCvButton: 'Lebenslauf hochladen',
+    noCityPlaceholder: 'Berlin, München, Hamburg...',
+    autoRefresh: 'Automatisch aktualisieren',
+    off: 'Aus',
+    everyMinute: 'Alle 1 Minute',
+    everyHour: 'Alle 1 Stunde',
+    everyDay: 'Alle 1 Tag',
+    nearbyCitiesHint: 'Nahegelegene Städte werden für diesen Ort einbezogen.',
+    allCountries: 'Alle Länder',
+  },
+  ar: {
+    appTitle: 'منصة الوظائف الذكية',
+    home: 'الرئيسية',
+    login: 'تسجيل الدخول',
+    register: 'إنشاء حساب',
+    jobs: 'الوظائف',
+    chatbot: 'الدردشة الذكية',
+    dashboard: 'لوحة التحكم',
+    logout: 'تسجيل الخروج',
+    heroBadge: 'اعثر على خطوتك المهنية القادمة',
+    heroTitle: 'وظائف وتقديمات وتوصيات ذكية في مكان واحد.',
+    browseJobs: 'تصفح الوظائف',
+    createAccount: 'إنشاء حساب',
+    email: 'البريد الإلكتروني',
+    password: 'كلمة المرور',
+    signIn: 'دخول',
+    signingIn: 'جاري الدخول...',
+    useDemo: 'دخول تجريبي',
+    loadingDemo: 'جارٍ تحميل التجربة...',
+    fullName: 'الاسم الكامل',
+    creating: 'جاري الإنشاء...',
+    jobsTitle: 'الوظائف',
+    uploadCv: 'رفع السيرة الذاتية',
+    searchManual: 'بحث يدوي',
+    whatJob: 'ما الوظيفة التي تبحث عنها؟',
+    countryOptional: 'الدولة (اختياري)',
+    chooseCountryFirst: 'اختر الدولة أولاً',
+    noMatchingJobs: 'لم يتم العثور على وظائف مطابقة.',
+    noMatchingJobsBroader: 'لم يتم العثور على وظائف مطابقة. جرّب بحثًا أوسع.',
+    showingJobs: 'عرض',
+    jobsCountSuffix: 'وظيفة',
+    noFreshMatchingJobs: 'لم يتم العثور على وظائف حديثة مطابقة.',
+    radius: 'المسافة',
+    km5: '5 كم',
+    km10: '10 كم',
+    km20: '20 كم',
+    km30: '30 كم',
+    km50: '50 كم',
+    km100: '100 كم',
+    cityOptional: 'المدينة (اختياري)',
+    cityPlaceholder: 'المدينة (اختياري) مثل برلين، ميونخ، هامبورغ',
+    search: 'بحث',
+    searching: 'جاري البحث...',
+    advancedFilters: 'فلاتر متقدمة (اختياري)',
+    workMode: 'نمط العمل',
+    remote: 'عن بعد',
+    hybrid: 'هجين',
+    onsite: 'في الموقع',
+    jobType: 'نوع الوظيفة',
+    fullTime: 'دوام كامل',
+    partTime: 'دوام جزئي',
+    contract: 'عقد',
+    internship: 'تدريب',
+    experienceLevel: 'مستوى الخبرة',
+    junior: 'مبتدئ',
+    mid: 'متوسط',
+    senior: 'خبير',
+    loadMore: 'تحميل المزيد',
+    loadingMore: 'جاري التحميل...',
+    applyNow: 'قدّم الآن',
+    applyEmployer: 'التقديم على موقع الشركة',
+    matchScore: 'درجة المطابقة',
+    source: 'المصدر',
+    dashboardTitle: 'لوحة التحكم',
+    myApplications: 'طلباتي',
+    noApplications: 'لا توجد طلبات بعد.',
+    cvUploaded: 'تم رفع السيرة',
+    yes: 'نعم',
+    no: 'لا',
+    quickSearch: 'بحث سريع',
+    searchAll: 'بحث في كل',
+    jobRecommendations: 'توصيات الوظائف',
+    aiMatching: 'مطابقة ذكية',
+    noMatches: 'لا توجد نتائج مطابقة بعد. ارفع سيرتك أولاً.',
+    didYouMean: 'هل تقصد',
+    language: 'اللغة',
+    loadingJobs: 'جاري تحميل الوظائف...',
+    uploadCvHint: 'ارفع سيرتك الذاتية من لوحة التحكم لتفعيل المطابقة المعتمدة على السيرة.',
+    goToDashboardUpload: 'الذهاب إلى رفع السيرة في اللوحة',
+    pleaseLoginApply: 'يرجى تسجيل الدخول أولاً للتقديم.',
+    applicationSuccess: 'تم إرسال الطلب بنجاح.',
+    welcome: 'مرحباً',
+    totalJobs: 'إجمالي الوظائف',
+    remoteJobs: 'وظائف عن بعد',
+    userFallback: 'مستخدم',
+    status: 'الحالة',
+    cvFile: 'ملف السيرة',
+    addApiKeysHint: 'أضف مفاتيح API لعرض عدد كبير من الوظائف الحقيقية.',
+    realJobsFetched: 'الوظائف الحقيقية التي تم جلبها',
+    registrationComplete: 'اكتمل التسجيل. يمكنك تسجيل الدخول الآن.',
+    loginFailed: 'فشل تسجيل الدخول',
+    demoLoginFailed: 'فشل تسجيل الدخول التجريبي',
+    registrationFailed: 'فشل إنشاء الحساب',
+    applyFailed: 'فشل التقديم',
+    demoJobNotice: 'هذه وظيفة تجريبية للعرض فقط.',
+    couldNotLoadJobs: 'تعذر تحميل الوظائف.',
+    couldNotLoadAiMatches: 'تعذر تحميل نتائج المطابقة الذكية',
+    uploadCvButton: 'رفع السيرة الذاتية',
+    noCityPlaceholder: 'برلين، ميونخ، هامبورغ...',
+    autoRefresh: 'تحديث تلقائي',
+    off: 'إيقاف',
+    everyMinute: 'كل 1 دقيقة',
+    everyHour: 'كل 1 ساعة',
+    everyDay: 'كل 1 يوم',
+    nearbyCitiesHint: 'يتم تضمين المدن القريبة لهذا الموقع.',
+    allCountries: 'كل الدول',
+  },
 }
 
-function Layout({ children, isAuthenticated, onLogout }) {
+const RTL_LANGS = new Set(['ar'])
+const tFor = (lang, key) => I18N[lang]?.[key] || I18N.en[key] || key
+const POPULAR_JOB_OPTIONS = [
+  { value: 'Housekeeping', labels: { en: 'Housekeeping', de: 'Housekeeping', ar: 'خدمة تنظيف / تدبير منزلي' } },
+  { value: 'Nurse', labels: { en: 'Nurse', de: 'Krankenpfleger/in', ar: 'ممرض / ممرضة' } },
+  { value: 'Nursing Assistant', labels: { en: 'Nursing Assistant', de: 'Pflegehelfer/in', ar: 'مساعدة ممرضة' } },
+  { value: 'Case Manager Nurse', labels: { en: 'Case Manager Nurse', de: 'Pflegefallmanager/in', ar: 'مديرة حالة ممرضة' } },
+  { value: 'Advanced Practice Nurse', labels: { en: 'Advanced Practice Nurse', de: 'Advanced Practice Nurse', ar: 'ممرضة ممارسة متقدمة' } },
+  { value: 'Driver', labels: { en: 'Driver', de: 'Fahrer/in', ar: 'سائق' } },
+  { value: 'Security Guard', labels: { en: 'Security Guard', de: 'Sicherheitsmitarbeiter/in', ar: 'حارس أمن' } },
+  { value: 'Warehouse Worker', labels: { en: 'Warehouse Worker', de: 'Lagerarbeiter/in', ar: 'عامل مستودع' } },
+  { value: 'Cashier', labels: { en: 'Cashier', de: 'Kassierer/in', ar: 'أمين صندوق' } },
+  { value: 'Waiter', labels: { en: 'Waiter', de: 'Kellner/in', ar: 'نادل / نادلة' } },
+  { value: 'Chef', labels: { en: 'Chef', de: 'Koch / Köchin', ar: 'طباخ / شيف' } },
+  { value: 'Sales Assistant', labels: { en: 'Sales Assistant', de: 'Verkäufer/in', ar: 'مساعد مبيعات' } },
+  { value: 'Customer Support', labels: { en: 'Customer Support', de: 'Kundensupport', ar: 'دعم العملاء' } },
+  { value: 'Electrician', labels: { en: 'Electrician', de: 'Elektriker/in', ar: 'كهربائي' } },
+  { value: 'Plumber', labels: { en: 'Plumber', de: 'Installateur/in', ar: 'سباك' } },
+  { value: 'Software Engineer', labels: { en: 'Software Engineer', de: 'Softwareentwickler/in', ar: 'مهندس برمجيات' } },
+  { value: 'Frontend Developer', labels: { en: 'Frontend Developer', de: 'Frontend-Entwickler/in', ar: 'مطور واجهات أمامية' } },
+  { value: 'Data Analyst', labels: { en: 'Data Analyst', de: 'Datenanalyst/in', ar: 'محلل بيانات' } },
+  { value: 'Employer Relations Specialist', labels: { en: 'Employer Relations Specialist', de: 'Arbeitgeberbeziehungsmanager/in', ar: 'أصحاب العمل' } },
+  { value: 'Job Posting Specialist', labels: { en: 'Job Posting Specialist', de: 'Stellenanzeigen-Spezialist/in', ar: 'إعلانات الوظائف المنشورة' } },
+  { value: 'HR Specialist', labels: { en: 'HR Specialist', de: 'HR-Spezialist/in', ar: 'معرفة الموارد البشرية' }, keywords: ['hr', 'human resources', 'resources'] },
+  { value: 'Recruiter', labels: { en: 'Recruiter', de: 'Recruiter/in', ar: 'التواصل مع أصحاب العمل' }, keywords: ['hr', 'recruitment', 'talent'] },
+  { value: 'Payroll Specialist', labels: { en: 'Payroll Specialist', de: 'Gehaltsabrechnung-Spezialist/in', ar: 'تقرير الرواتب' }, keywords: ['hr', 'payroll', 'salary'] },
+]
+
+const JOB_TITLE_ALIASES = {
+  'ممرضة': 'Nurse',
+  'ممرض': 'Nurse',
+  'ممرضة/ممرض': 'Nurse',
+  'مساعدة ممرضة': 'Nursing Assistant',
+  'مديرة حالة ممرضة': 'Case Manager Nurse',
+  'ممرضة ممارسة متقدمة': 'Advanced Practice Nurse',
+  'أصحاب العمل': 'Employer Relations Specialist',
+  'إعلانات الوظائف المنشورة': 'Job Posting Specialist',
+  'معرفة الموارد البشرية': 'HR Specialist',
+  'التواصل مع أصحاب العمل': 'Recruiter',
+  'تقرير الرواتب': 'Payroll Specialist',
+}
+
+const normalizeJobTitleForSearch = (rawTitle) => {
+  const text = (rawTitle || '').trim()
+  if (!text) return ''
+  return JOB_TITLE_ALIASES[text] || text
+}
+
+const getLocalJobSuggestions = (text, lang, limit = 8) => {
+  const needle = (text || '').trim().toLowerCase()
+  if (!needle) return []
+  const hits = POPULAR_JOB_OPTIONS.filter((option) => {
+    const label = (option.labels?.[lang] || option.labels?.en || option.value || '').toLowerCase()
+    const value = (option.value || '').toLowerCase()
+    const keywords = (option.keywords || []).join(' ').toLowerCase()
+    return label.includes(needle) || value.includes(needle) || keywords.includes(needle)
+  }).map((option) => option.value)
+  return Array.from(new Set(hits)).slice(0, limit)
+}
+
+const getJobLabel = (option, lang) => option?.labels?.[lang] || option?.labels?.en || option?.value || ''
+
+const FALLBACK_COUNTRIES = ['Germany']
+const FALLBACK_GERMANY_CITIES = [
+  'Berlin',
+  'Hamburg',
+  'Munich',
+  'München',
+  'Düsseldorf',
+  'Dusseldorf',
+  'Velbert',
+  'Essen',
+  'Wuppertal',
+  'Dresden',
+  'Frankfurt',
+  'Frankfurt am Main',
+  'Cologne',
+  'Köln',
+  'Stuttgart',
+]
+
+const fetchWithFallback = async (path, options = {}) => {
+  if (configuredApiUrl) {
+    return fetch(`${configuredApiUrl}${path}`, options)
+  }
+
+  let lastError
+  for (const baseUrl of localApiCandidates) {
+    try {
+      return await fetch(`${baseUrl}${path}`, options)
+    } catch (error) {
+      lastError = error
+    }
+  }
+  throw lastError || new Error('Could not connect to backend API')
+}
+
+const normalizeItems = (rawItems) => {
+  if (Array.isArray(rawItems)) return rawItems
+  if (rawItems && typeof rawItems === 'object') return Object.values(rawItems)
+  return []
+}
+
+const isValidApplyUrl = (value) => {
+  if (!value || typeof value !== 'string') return false
+  const trimmed = value.trim()
+  if (!trimmed) return false
+  try {
+    const parsed = new URL(trimmed)
+    return parsed.protocol === 'http:' || parsed.protocol === 'https:'
+  } catch {
+    return false
+  }
+}
+
+const formatPostedAgeLabel = (job) => {
+  const postedLabel = (job?.posted_label || '').trim()
+  if (postedLabel) return postedLabel
+  const days = Number(job?.posted_days)
+  if (!Number.isFinite(days) || days < 0) return 'Recently posted'
+  if (days === 0) return 'Posted today'
+  if (days === 1) return 'Posted 1 day ago'
+  if (days < 7) return `Posted ${days} days ago`
+  if (days < 14) return 'Posted 1 week ago'
+  const weeks = Math.round(days / 7)
+  return `Posted ${weeks} weeks ago`
+}
+
+const GERMANY_NEARBY_CITIES = {
+  dusseldorf: ['heiligenhaus', 'velbert', 'wuppertal', 'ratingen', 'neuss', 'duisburg'],
+  'düsseldorf': ['heiligenhaus', 'velbert', 'wuppertal', 'ratingen', 'neuss', 'duisburg'],
+  velbert: ['dusseldorf', 'düsseldorf', 'heiligenhaus', 'wuppertal', 'ratingen', 'essen'],
+  heiligenhaus: ['velbert', 'dusseldorf', 'ratingen', 'wülfrath', 'essen'],
+  wuppertal: ['velbert', 'dusseldorf', 'solingen', 'remscheid', 'essen'],
+  ratingen: ['dusseldorf', 'duisburg', 'essen', 'velbert', 'mettmann'],
+  neuss: ['dusseldorf', 'krefeld', 'moenchengladbach', 'köln'],
+  duisburg: ['dusseldorf', 'essen', 'oberhausen', 'muelheim', 'krefeld'],
+  essen: ['duisburg', 'bochum', 'gelsenkirchen', 'dortmund', 'velbert'],
+  berlin: ['potsdam', 'oranienburg', 'bernau', 'teltow'],
+  potsdam: ['berlin', 'brandenburg an der havel', 'werder'],
+  munich: ['augsburg', 'freising', 'erding', 'dachau'],
+  'münchen': ['augsburg', 'freising', 'erding', 'dachau'],
+  augsburg: ['münchen', 'munich', 'ulm', 'ingolstadt'],
+  hamburg: ['norderstedt', 'pinneberg', 'aharensburg', 'lueneburg'],
+  norderstedt: ['hamburg', 'pinneberg', 'elmshorn'],
+  frankfurt: ['offenbach', 'darmstadt', 'wiesbaden', 'mainz', 'hanau'],
+  'frankfurt am main': ['offenbach', 'darmstadt', 'wiesbaden', 'mainz', 'hanau'],
+  stuttgart: ['esslingen', 'ludwigsburg', 'boeblingen', 'heilbronn'],
+  cologne: ['köln', 'bonn', 'leverkusen', 'bergisch gladbach', 'troisdorf'],
+  bonn: ['köln', 'cologne', 'siegburg', 'troisdorf'],
+  dortmund: ['bochum', 'essen', 'hagen', 'unna', 'duisburg'],
+  leipzig: ['halle', 'markkleeberg', 'taucha', 'schkeuditz'],
+  köln: ['bonn', 'leverkusen', 'bergisch gladbach', 'troisdorf'],
+}
+
+const filterJobsClientSide = (items, filters = {}, options = {}) => {
+  const title = (filters.job_title || '').trim().toLowerCase()
+  const country = (filters.country || '').trim().toLowerCase()
+  const city = (filters.city || '').trim().toLowerCase()
+  const workMode = (filters.work_mode || '').trim().toLowerCase()
+  const exactTitleRequired = options.exactTitleRequired !== false
+  const includeNearbyCities = options.includeNearbyCities === true
+  const nearbyCities = includeNearbyCities ? (GERMANY_NEARBY_CITIES[city] || []) : []
+
+  return items.filter((job) => {
+    const titleBlob = `${job?.title || ''}`.toLowerCase()
+    const locationBlob = `${job?.location || ''}`.toLowerCase()
+    const modeBlob = `${job?.work_mode || ''} ${job?.description || ''}`.toLowerCase()
+
+    if (title) {
+      if (exactTitleRequired && !titleBlob.includes(title)) return false
+      if (!exactTitleRequired) {
+        const titleTokens = title.split(/\s+/).map((t) => t.trim()).filter((t) => t.length >= 4)
+        if (titleTokens.length > 0 && !titleTokens.some((token) => titleBlob.includes(token))) return false
+      }
+    }
+    if (country && !locationBlob.includes(country)) return false
+    if (city) {
+      const cityMatch = locationBlob.includes(city) || nearbyCities.some((c) => locationBlob.includes(c))
+      if (!cityMatch) return false
+    }
+    if (workMode && !modeBlob.includes(workMode)) return false
+    return true
+  })
+}
+
+const getNearbyCities = (country, city) => {
+  const countryValue = (country || '').trim().toLowerCase()
+  const cityValue = (city || '').trim().toLowerCase()
+  if (!cityValue) return []
+  if (!['germany', 'de', 'deutschland'].includes(countryValue)) return []
+  return GERMANY_NEARBY_CITIES[cityValue] || []
+}
+
+const getShortReason = (job) => {
+  if (job?.why_match) return job.why_match
+  if (job?.preference_reasons?.length > 0) return job.preference_reasons[0]
+  if (job?.reasons?.length > 0) return job.reasons[0]
+  return 'General match based on your profile.'
+}
+
+function Layout({ children, isAuthenticated, onLogout, lang, onLangChange }) {
+  const t = (key) => tFor(lang, key)
   return (
     <div className="app-shell">
       <header className="topbar">
-        <h1>Smart Job Platform</h1>
+        <h1>{t('appTitle')}</h1>
         <nav>
-          <NavLink to="/">Home</NavLink>
-          {!isAuthenticated && <NavLink to="/login">Login</NavLink>}
-          {!isAuthenticated && <NavLink to="/register">Register</NavLink>}
-          <NavLink to="/jobs">Jobs</NavLink>
-          <NavLink to="/dashboard">Dashboard</NavLink>
+          <NavLink to="/">{t('home')}</NavLink>
+          {!isAuthenticated && <NavLink to="/login">{t('login')}</NavLink>}
+          {!isAuthenticated && <NavLink to="/register">{t('register')}</NavLink>}
+          <NavLink to="/jobs">{t('jobs')}</NavLink>
+          <NavLink to="/chatbot">{t('chatbot')}</NavLink>
+          <NavLink to="/dashboard">{t('dashboard')}</NavLink>
           {isAuthenticated && (
             <button type="button" className="link-btn" onClick={onLogout}>
-              Logout
+              {t('logout')}
             </button>
           )}
+          <label className="lang-switch">
+            <span>{t('language')}</span>
+            <select value={lang} onChange={(e) => onLangChange(e.target.value)}>
+              <option value="en">EN</option>
+              <option value="de">DE</option>
+              <option value="ar">AR</option>
+            </select>
+          </label>
         </nav>
       </header>
       <main>{children}</main>
@@ -54,29 +565,35 @@ function Layout({ children, isAuthenticated, onLogout }) {
   )
 }
 
-function HomePage() {
+function HomePage({ lang }) {
+  const t = (key) => tFor(lang, key)
   return (
     <section className="hero">
-      <p className="badge">Find your next career move</p>
-      <h2>Jobs, applications, and AI suggestions in one place.</h2>
-      <div className="actions">
-        <Link to="/jobs" className="btn">
-          Browse Jobs
-        </Link>
-        <Link to="/register" className="btn btn-secondary">
-          Create Account
-        </Link>
+      <div className="hero-copy">
+        <p className="badge">{t('heroBadge')}</p>
+        <h2>{t('heroTitle')}</h2>
+        <div className="actions">
+          <Link to="/jobs" className="btn">
+            {t('browseJobs')}
+          </Link>
+          <Link to="/register" className="btn btn-secondary">
+            {t('createAccount')}
+          </Link>
+        </div>
       </div>
+      <img className="hero-image" src={heroImage} alt="Smart Job Platform layered hero graphic" />
     </section>
   )
 }
 
-function LoginPage({ onLogin }) {
+function LoginPage({ onLogin, lang }) {
+  const t = (key) => tFor(lang, key)
   const navigate = useNavigate()
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
+  const [demoLoading, setDemoLoading] = useState(false)
 
   const handleSubmit = async (event) => {
     event.preventDefault()
@@ -84,7 +601,7 @@ function LoginPage({ onLogin }) {
     setLoading(true)
 
     try {
-      const response = await fetch(`${apiBaseUrl}/auth/login`, {
+      const response = await fetchWithFallback('/auth/login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email, password }),
@@ -92,7 +609,7 @@ function LoginPage({ onLogin }) {
 
       const data = await response.json()
       if (!response.ok) {
-        throw new Error(data.detail || 'Login failed')
+        throw new Error(data.detail || t('loginFailed'))
       }
 
       onLogin(data.token, data.user)
@@ -104,28 +621,54 @@ function LoginPage({ onLogin }) {
     }
   }
 
+  const handleDemoLogin = async () => {
+    setError('')
+    setDemoLoading(true)
+
+    try {
+      const response = await fetchWithFallback('/auth/demo-login', {
+        method: 'POST',
+      })
+      const data = await response.json()
+      if (!response.ok) {
+        throw new Error(data.detail || t('demoLoginFailed'))
+      }
+
+      onLogin(data.token, data.user)
+      navigate('/dashboard')
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setDemoLoading(false)
+    }
+  }
+
   return (
     <section className="card">
-      <h2>Login</h2>
+      <h2>{t('login')}</h2>
       <form className="form-grid" onSubmit={handleSubmit}>
-        <input type="email" placeholder="Email" value={email} onChange={(e) => setEmail(e.target.value)} required />
+        <input type="email" placeholder={t('email')} value={email} onChange={(e) => setEmail(e.target.value)} required />
         <input
           type="password"
-          placeholder="Password"
+          placeholder={t('password')}
           value={password}
           onChange={(e) => setPassword(e.target.value)}
           required
         />
         {error && <p className="error">{error}</p>}
         <button type="submit" className="btn" disabled={loading}>
-          {loading ? 'Signing in...' : 'Sign In'}
+          {loading ? t('signingIn') : t('signIn')}
+        </button>
+        <button type="button" className="btn btn-secondary" onClick={handleDemoLogin} disabled={demoLoading}>
+          {demoLoading ? t('loadingDemo') : t('useDemo')}
         </button>
       </form>
     </section>
   )
 }
 
-function RegisterPage() {
+function RegisterPage({ lang }) {
+  const t = (key) => tFor(lang, key)
   const navigate = useNavigate()
   const [name, setName] = useState('')
   const [email, setEmail] = useState('')
@@ -141,7 +684,7 @@ function RegisterPage() {
     setLoading(true)
 
     try {
-      const response = await fetch(`${apiBaseUrl}/auth/register`, {
+      const response = await fetchWithFallback('/auth/register', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ name, email, password }),
@@ -149,10 +692,10 @@ function RegisterPage() {
 
       const data = await response.json()
       if (!response.ok) {
-        throw new Error(data.detail || 'Registration failed')
+        throw new Error(data.detail || t('registrationFailed'))
       }
 
-      setMessage('Registration complete. You can login now.')
+      setMessage(t('registrationComplete'))
       setTimeout(() => navigate('/login'), 800)
     } catch (err) {
       setError(err.message)
@@ -163,13 +706,13 @@ function RegisterPage() {
 
   return (
     <section className="card">
-      <h2>Register</h2>
+      <h2>{t('register')}</h2>
       <form className="form-grid" onSubmit={handleSubmit}>
-        <input type="text" placeholder="Full name" value={name} onChange={(e) => setName(e.target.value)} required />
-        <input type="email" placeholder="Email" value={email} onChange={(e) => setEmail(e.target.value)} required />
+        <input type="text" placeholder={t('fullName')} value={name} onChange={(e) => setName(e.target.value)} required />
+        <input type="email" placeholder={t('email')} value={email} onChange={(e) => setEmail(e.target.value)} required />
         <input
           type="password"
-          placeholder="Password"
+          placeholder={t('password')}
           value={password}
           onChange={(e) => setPassword(e.target.value)}
           required
@@ -177,91 +720,402 @@ function RegisterPage() {
         {error && <p className="error">{error}</p>}
         {message && <p className="success">{message}</p>}
         <button type="submit" className="btn" disabled={loading}>
-          {loading ? 'Creating...' : 'Create Account'}
+          {loading ? t('creating') : t('createAccount')}
         </button>
       </form>
     </section>
   )
 }
 
-function JobsPage({ token }) {
+function JobsPage({ token, lang }) {
+  const t = (key) => tFor(lang, key)
   const [jobs, setJobs] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
-  const [applyMessage, setApplyMessage] = useState('')
+  const [loadingMore, setLoadingMore] = useState(false)
+  const [searchMethod, setSearchMethod] = useState('manual')
+  const [filters, setFilters] = useState({
+    search_text: '',
+    country: 'Germany',
+    city: '',
+    job_title: '',
+    radius_km: 20,
+    work_mode: '',
+    job_type: '',
+    experience_level: '',
+  })
+  const [searchMeta, setSearchMeta] = useState({
+    fetched: 0,
+    fallback: false,
+    apiKeys: false,
+    message: '',
+    providerWarning: '',
+    hasMore: false,
+    total: 0,
+    offset: 0,
+    limit: 20,
+  })
+  const [titleSuggestions, setTitleSuggestions] = useState([])
+  const [titleCorrectionHint, setTitleCorrectionHint] = useState('')
+  const [countryOptions, setCountryOptions] = useState([])
+  const [cityOptions, setCityOptions] = useState([])
+  const nearbyCities = getNearbyCities(filters.country, filters.city)
 
-  useEffect(() => {
-    const fetchJobs = async () => {
-      try {
-        const response = await fetch(`${apiBaseUrl}/jobs`)
-        if (!response.ok) {
-          throw new Error('Could not load jobs.')
-        }
-        const data = await response.json()
-        setJobs(data)
-      } catch (err) {
-        setError(err.message)
-      } finally {
-        setLoading(false)
-      }
-    }
-
-    fetchJobs()
-  }, [])
-
-  const handleApply = async (jobId) => {
-    if (!token) {
-      setApplyMessage('Please login first to apply.')
+  const loadTitleSuggestions = async (value) => {
+    const text = (value || '').trim()
+    const localSuggestions = getLocalJobSuggestions(text, lang, 8)
+    if (!text) {
+      setTitleSuggestions([])
+      setTitleCorrectionHint('')
       return
     }
-
-    setApplyMessage('')
     try {
-      const response = await fetch(`${apiBaseUrl}/applications`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}`,
-        },
-        body: JSON.stringify({ job_id: jobId }),
-      })
-
+      const response = await fetchWithFallback(`/jobs/suggestions?q=${encodeURIComponent(text)}`)
       const data = await response.json()
-      if (!response.ok) {
-        throw new Error(data.detail || 'Apply failed')
+      if (response.ok) {
+        const remote = Array.isArray(data.items) ? data.items : []
+        setTitleSuggestions(Array.from(new Set([...localSuggestions, ...remote])).slice(0, 8))
+        setTitleCorrectionHint(data.corrected_job_title ? `${t('didYouMean')}: ${data.corrected_job_title}?` : '')
       }
-
-      setApplyMessage('Application submitted successfully.')
-    } catch (err) {
-      setApplyMessage(err.message)
+    } catch {
+      setTitleSuggestions(localSuggestions)
+      setTitleCorrectionHint('')
     }
   }
 
+  const loadCountryOptions = async () => {
+    try {
+      const response = await fetchWithFallback('/locations/countries')
+      if (!response.ok) {
+        setCountryOptions(FALLBACK_COUNTRIES)
+        return
+      }
+      const data = await response.json()
+      setCountryOptions(Array.isArray(data.items) && data.items.length > 0 ? data.items : FALLBACK_COUNTRIES)
+    } catch {
+      setCountryOptions(FALLBACK_COUNTRIES)
+    }
+  }
+
+  const loadCityOptions = async (country, q = '') => {
+    try {
+      const params = new URLSearchParams()
+      if (country) params.set('country', country)
+      if (q) params.set('q', q)
+      const response = await fetchWithFallback(`/locations/cities?${params.toString()}`)
+      if (!response.ok) {
+        const needle = (q || '').toLowerCase()
+        setCityOptions(FALLBACK_GERMANY_CITIES.filter((c) => !needle || c.toLowerCase().includes(needle)))
+        return
+      }
+      const data = await response.json()
+      if (Array.isArray(data.items) && data.items.length > 0) {
+        setCityOptions(data.items)
+      } else {
+        const needle = (q || '').toLowerCase()
+        setCityOptions(FALLBACK_GERMANY_CITIES.filter((c) => !needle || c.toLowerCase().includes(needle)))
+      }
+    } catch {
+      const needle = (q || '').toLowerCase()
+      setCityOptions(FALLBACK_GERMANY_CITIES.filter((c) => !needle || c.toLowerCase().includes(needle)))
+    }
+  }
+
+  const runSearch = async ({ append = false } = {}) => {
+    const nextOffset = append ? jobs.length : 0
+    const effectiveJobTitle = normalizeJobTitleForSearch(filters.job_title)
+    if (append) {
+      setLoadingMore(true)
+    } else {
+      setLoading(true)
+    }
+
+    try {
+      const headers = { 'Content-Type': 'application/json' }
+      if (token) {
+        headers.Authorization = `Bearer ${token}`
+      }
+      const response = await fetchWithFallback('/jobs/search', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          ...filters,
+          job_title: effectiveJobTitle,
+          search_text: (filters.search_text || filters.job_title || '').trim(),
+          limit: 20,
+          offset: nextOffset,
+        }),
+      })
+      if (!response.ok) {
+        throw new Error(t('couldNotLoadJobs'))
+      }
+      const data = await response.json()
+      const incoming = normalizeItems(data.items)
+      console.log('[JobsPage] /jobs/search items.length =', incoming.length, 'fetched_jobs_count =', data.fetched_jobs_count)
+      let nextJobs = incoming
+
+      // If provider fetch succeeded but ranked items are empty, show raw recent jobs fallback cards.
+      if (!append && incoming.length === 0 && Number(data.fetched_jobs_count || 0) > 0) {
+        try {
+          const rawResponse = await fetchWithFallback('/jobs')
+          if (rawResponse.ok) {
+            const rawData = await rawResponse.json()
+            const rawItems = normalizeItems(rawData)
+            const filteredFallback = filterJobsClientSide(rawItems, filters, { exactTitleRequired: true, includeNearbyCities: true })
+            console.log('[JobsPage] /jobs fallback items.length =', rawItems.length, 'filtered =', filteredFallback.length)
+            nextJobs = filteredFallback
+          }
+        } catch (fallbackErr) {
+          console.warn('[JobsPage] /jobs fallback failed', fallbackErr)
+        }
+      }
+
+      setJobs((prev) => (append ? [...prev, ...nextJobs] : nextJobs))
+      if (!append && nextJobs.length === 0) {
+        setSearchMeta((prev) => ({
+          ...prev,
+          message: data.message || t('noFreshMatchingJobs'),
+          providerWarning: data.provider_warning || '',
+          total: 0,
+          hasMore: false,
+        }))
+      }
+      setSearchMeta({
+        fetched: data.fetched_jobs_count || 0,
+        fallback: Boolean(data.used_fallback),
+        apiKeys: Boolean(data.api_keys_configured),
+        message: data.message || (nextJobs.length === 0 ? t('noFreshMatchingJobs') : ''),
+        providerWarning: data.provider_warning || '',
+        hasMore: Boolean(data.has_more),
+        total: data.total_available || nextJobs.length,
+        offset: data.offset || 0,
+        limit: data.limit || 20,
+      })
+      if (data.corrected_job_title) {
+        setTitleCorrectionHint(`${t('didYouMean')}: ${data.corrected_job_title}?`)
+      }
+      setError('')
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setLoading(false)
+      setLoadingMore(false)
+    }
+  }
+
+  useEffect(() => {
+    runSearch({ append: false })
+    loadCountryOptions()
+    loadCityOptions('Germany', '')
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [token])
+
   return (
     <section className="card">
-      <h2>Jobs</h2>
-      {loading && <p>Loading jobs...</p>}
+      <h2>{t('jobsTitle')}</h2>
+      <div className="actions">
+        <button
+          type="button"
+          className={`btn ${searchMethod === 'upload' ? '' : 'btn-secondary'}`}
+          onClick={() => setSearchMethod('upload')}
+        >
+          {t('uploadCv')}
+        </button>
+        <button
+          type="button"
+          className={`btn ${searchMethod === 'manual' ? '' : 'btn-secondary'}`}
+          onClick={() => setSearchMethod('manual')}
+        >
+          {t('searchManual')}
+        </button>
+      </div>
+
+      {searchMethod === 'upload' && (
+        <form className="form-grid" onSubmit={(event) => event.preventDefault()}>
+          <p>{t('uploadCvHint')}</p>
+          <a className="btn" href="/dashboard">
+            {t('goToDashboardUpload')}
+          </a>
+        </form>
+      )}
+
+      {searchMethod === 'manual' && (
+      <form
+        className="form-grid search-form"
+        onSubmit={(event) => {
+          event.preventDefault()
+          runSearch({ append: false })
+        }}
+      >
+        <select
+          value=""
+          onChange={(event) => {
+            const value = event.target.value
+            if (!value) return
+            setFilters((prev) => ({ ...prev, job_title: value }))
+            loadTitleSuggestions(value)
+          }}
+        >
+          <option value="">{t('whatJob')}</option>
+          {POPULAR_JOB_OPTIONS.map((option) => (
+            <option key={`jobs-job-option-${option.value}`} value={option.value}>
+              {getJobLabel(option, lang)}
+            </option>
+          ))}
+        </select>
+        <input
+          type="text"
+            placeholder={t('whatJob')}
+          list="job-title-suggestions"
+          value={filters.job_title}
+          onChange={(event) => {
+            const value = event.target.value
+            setFilters((prev) => ({ ...prev, job_title: value }))
+            loadTitleSuggestions(value)
+          }}
+        />
+        <datalist id="job-title-suggestions">
+          {titleSuggestions.map((title) => (
+            <option key={`job-title-${title}`} value={title} />
+          ))}
+        </datalist>
+        <input type="hidden" value={filters.country || 'Germany'} />
+        <input
+          type="text"
+          placeholder={t('cityPlaceholder')}
+          list="jobs-city-suggestions"
+          value={filters.city}
+          onChange={(event) => {
+            const value = event.target.value
+            setFilters((prev) => ({ ...prev, city: value }))
+            loadCityOptions('Germany', value)
+          }}
+        />
+        <label>
+          {t('radius')}
+          <select
+            value={filters.radius_km}
+            onChange={(event) => setFilters((prev) => ({ ...prev, radius_km: Number(event.target.value) || 20 }))}
+          >
+            <option value={5}>{t('km5')}</option>
+            <option value={10}>{t('km10')}</option>
+            <option value={20}>{t('km20')}</option>
+            <option value={30}>{t('km30')}</option>
+            <option value={50}>{t('km50')}</option>
+            <option value={100}>{t('km100')}</option>
+          </select>
+        </label>
+        <datalist id="jobs-city-suggestions">
+          {cityOptions.map((city) => (
+            <option key={`jobs-city-${city}`} value={city} />
+          ))}
+        </datalist>
+        {nearbyCities.length > 0 && (
+          <div className="actions">
+            {nearbyCities.map((nearCity) => (
+              <button
+                key={`jobs-near-${nearCity}`}
+                type="button"
+                className="btn btn-secondary"
+                onClick={() => setFilters((prev) => ({ ...prev, city: nearCity }))}
+              >
+                {nearCity}
+              </button>
+            ))}
+          </div>
+        )}
+        {(filters.country || '').trim().toLowerCase() === 'germany' && (filters.city || '').trim() && (
+          <p className="success">{t('nearbyCitiesHint')}</p>
+        )}
+        {(filters.country || '').trim() && !(filters.city || '').trim() && (
+          <p className="success">{t('searchAll')} {(filters.country || '').trim()}</p>
+        )}
+        <details>
+          <summary>{t('advancedFilters')}</summary>
+          <div className="form-grid">
+            <select
+              value={filters.work_mode}
+              onChange={(event) => setFilters((prev) => ({ ...prev, work_mode: event.target.value }))}
+            >
+                <option value="">{t('workMode')}</option>
+                <option value="remote">{t('remote')}</option>
+                <option value="hybrid">{t('hybrid')}</option>
+                <option value="on-site">{t('onsite')}</option>
+            </select>
+            <select
+              value={filters.job_type}
+              onChange={(event) => setFilters((prev) => ({ ...prev, job_type: event.target.value }))}
+            >
+                <option value="">{t('jobType')}</option>
+                <option value="full-time">{t('fullTime')}</option>
+                <option value="part-time">{t('partTime')}</option>
+                <option value="contract">{t('contract')}</option>
+                <option value="internship">{t('internship')}</option>
+            </select>
+            <select
+              value={filters.experience_level}
+              onChange={(event) => setFilters((prev) => ({ ...prev, experience_level: event.target.value }))}
+            >
+                <option value="">{t('experienceLevel')}</option>
+                <option value="junior">{t('junior')}</option>
+                <option value="mid">{t('mid')}</option>
+                <option value="senior">{t('senior')}</option>
+            </select>
+          </div>
+        </details>
+        <button type="submit" className="btn" disabled={loading}>
+          {loading ? t('searching') : t('search')}
+        </button>
+      </form>
+      )}
+      {loading && <p>{t('loadingJobs')}</p>}
       {error && <p className="error">{error}</p>}
-      {applyMessage && <p className="success">{applyMessage}</p>}
+      {titleCorrectionHint && <p className="success">{titleCorrectionHint}</p>}
+      {!loading && !error && (
+        <p>
+          {jobs.length > 0
+            ? `${t('showingJobs')} ${jobs.length} ${t('jobsCountSuffix')}`
+            : (searchMeta.message || t('noMatchingJobsBroader'))}
+        </p>
+      )}
       <div className="jobs-list">
         {jobs.map((job) => (
-          <article className="job-item" key={job.id}>
+          <article className="job-item" key={`${job.job_id || 'job'}-${job.external_id || job.id || job.title}`}>
+            {job.company_logo_url && (
+              <img className="job-logo" src={job.company_logo_url} alt={`${job.company || 'Company'} logo`} loading="lazy" />
+            )}
             <h3>{job.title}</h3>
             <p>{job.company}</p>
-            <small>{job.location}</small>
-            <div className="job-actions">
-              <button type="button" className="btn" onClick={() => handleApply(job.id)}>
-                Apply Now
-              </button>
-            </div>
+            <small>{job.city || job.location}</small>
+            {job.source && <small>{t('source')}: {job.source}</small>}
+            {job.work_mode && <small>{job.work_mode}</small>}
+            {job.distance_label && <small>{job.distance_label}</small>}
+            <small>{formatPostedAgeLabel(job)}</small>
+            {'score' in job && <p>{t('matchScore')}: {job.score}%</p>}
+            <p>{getShortReason(job)}</p>
+            {isValidApplyUrl(job.apply_url) && !job.is_sample_demo && (
+              <div className="job-actions">
+                <a className="btn" href={job.apply_url} target="_blank" rel="noopener noreferrer">
+                  {t('applyNow')}
+                </a>
+              </div>
+            )}
           </article>
         ))}
       </div>
+      {searchMeta.hasMore && (
+        <div className="job-actions">
+          <button type="button" className="btn" onClick={() => runSearch({ append: true })} disabled={loadingMore}>
+            {loadingMore ? t('loadingMore') : t('loadMore')}
+          </button>
+        </div>
+      )}
     </section>
   )
 }
 
-function DashboardPage({ currentUser, token, onAuthInvalid }) {
+function DashboardPage({ currentUser, token, onAuthInvalid, lang }) {
+  const t = (key) => tFor(lang, key)
   const [jobs, setJobs] = useState([])
   const [applications, setApplications] = useState([])
   const [verifiedUser, setVerifiedUser] = useState(currentUser)
@@ -270,26 +1124,177 @@ function DashboardPage({ currentUser, token, onAuthInvalid }) {
   const [uploadMessage, setUploadMessage] = useState('')
   const [uploadError, setUploadError] = useState('')
   const [preferences, setPreferences] = useState({
-    country: '',
+    search_text: '',
+    country: 'Germany',
     city: '',
+    job_title: '',
+    radius_km: 20,
     work_mode: '',
     job_type: '',
     experience_level: '',
   })
-  const [preferencesMessage, setPreferencesMessage] = useState('')
   const [preferencesError, setPreferencesError] = useState('')
   const [matches, setMatches] = useState([])
   const [matchesError, setMatchesError] = useState('')
+  const [matchesLoading, setMatchesLoading] = useState(false)
+  const [matchesLoadingMore, setMatchesLoadingMore] = useState(false)
+  const [searchMethod, setSearchMethod] = useState('manual')
+  const [matchSearchMeta, setMatchSearchMeta] = useState({
+    fetched: 0,
+    fallback: false,
+    apiKeys: false,
+    message: '',
+    providerWarning: '',
+    hasMore: false,
+    total: 0,
+    offset: 0,
+    limit: 20,
+  })
+  const [dashboardTitleSuggestions, setDashboardTitleSuggestions] = useState([])
+  const [dashboardCorrectionHint, setDashboardCorrectionHint] = useState('')
   const [authError, setAuthError] = useState('')
-  const [messages, setMessages] = useState([
-    { role: 'bot', content: 'Hi! Ask me for frontend, python, or remote jobs.' },
-  ])
-  const [input, setInput] = useState('')
+  const [countryOptions, setCountryOptions] = useState([])
+  const [cityOptions, setCityOptions] = useState([])
+  const dashboardNearbyCities = getNearbyCities(preferences.country, preferences.city)
+
+  const loadDashboardTitleSuggestions = async (value) => {
+    const text = (value || '').trim()
+    const localSuggestions = getLocalJobSuggestions(text, lang, 8)
+    if (!text) {
+      setDashboardTitleSuggestions([])
+      setDashboardCorrectionHint('')
+      return
+    }
+    try {
+      const response = await fetchWithFallback(`/jobs/suggestions?q=${encodeURIComponent(text)}`)
+      const data = await response.json()
+      if (response.ok) {
+        const remote = Array.isArray(data.items) ? data.items : []
+        setDashboardTitleSuggestions(Array.from(new Set([...localSuggestions, ...remote])).slice(0, 8))
+        setDashboardCorrectionHint(data.corrected_job_title ? `${t('didYouMean')}: ${data.corrected_job_title}?` : '')
+      }
+    } catch {
+      setDashboardTitleSuggestions(localSuggestions)
+      setDashboardCorrectionHint('')
+    }
+  }
+
+  const loadCountryOptions = async () => {
+    try {
+      const response = await fetchWithFallback('/locations/countries')
+      if (!response.ok) {
+        setCountryOptions(FALLBACK_COUNTRIES)
+        return
+      }
+      const data = await response.json()
+      setCountryOptions(Array.isArray(data.items) && data.items.length > 0 ? data.items : FALLBACK_COUNTRIES)
+    } catch {
+      setCountryOptions(FALLBACK_COUNTRIES)
+    }
+  }
+
+  const loadCityOptions = async (country, q = '') => {
+    try {
+      const params = new URLSearchParams()
+      if (country) params.set('country', country)
+      if (q) params.set('q', q)
+      const response = await fetchWithFallback(`/locations/cities?${params.toString()}`)
+      if (!response.ok) {
+        const needle = (q || '').toLowerCase()
+        setCityOptions(FALLBACK_GERMANY_CITIES.filter((c) => !needle || c.toLowerCase().includes(needle)))
+        return
+      }
+      const data = await response.json()
+      if (Array.isArray(data.items) && data.items.length > 0) {
+        setCityOptions(data.items)
+      } else {
+        const needle = (q || '').toLowerCase()
+        setCityOptions(FALLBACK_GERMANY_CITIES.filter((c) => !needle || c.toLowerCase().includes(needle)))
+      }
+    } catch {
+      const needle = (q || '').toLowerCase()
+      setCityOptions(FALLBACK_GERMANY_CITIES.filter((c) => !needle || c.toLowerCase().includes(needle)))
+    }
+  }
+
+  const runDashboardSearch = async ({ append = false, overridePreferences = null } = {}) => {
+    const activePreferences = overridePreferences || preferences
+    const effectiveJobTitle = normalizeJobTitleForSearch(activePreferences.job_title)
+    const nextOffset = append ? matches.length : 0
+    if (append) {
+      setMatchesLoadingMore(true)
+    } else {
+      setMatchesLoading(true)
+    }
+    try {
+      setMatchesError('')
+      const response = await fetchWithFallback('/jobs/search', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          ...activePreferences,
+          job_title: effectiveJobTitle,
+          search_text: (activePreferences.search_text || activePreferences.job_title || '').trim(),
+          limit: 20,
+          offset: nextOffset,
+        }),
+      })
+      const data = await response.json()
+      if (!response.ok) {
+        throw new Error(data.detail || t('couldNotLoadAiMatches'))
+      }
+      const incoming = normalizeItems(data.items)
+      console.log('[Dashboard] /jobs/search items.length =', incoming.length, 'fetched_jobs_count =', data.fetched_jobs_count)
+      let nextMatches = incoming
+
+      if (!append && incoming.length === 0 && Number(data.fetched_jobs_count || 0) > 0) {
+        try {
+          const rawResponse = await fetchWithFallback('/jobs')
+          if (rawResponse.ok) {
+            const rawData = await rawResponse.json()
+            const rawItems = normalizeItems(rawData)
+            const filteredFallback = filterJobsClientSide(rawItems, activePreferences || {}, { exactTitleRequired: true, includeNearbyCities: true })
+            console.log('[Dashboard] /jobs fallback items.length =', rawItems.length, 'filtered =', filteredFallback.length)
+            nextMatches = filteredFallback
+          }
+        } catch (fallbackErr) {
+          console.warn('[Dashboard] /jobs fallback failed', fallbackErr)
+        }
+      }
+
+      setMatches((prev) => (append ? [...prev, ...nextMatches] : nextMatches))
+      setMatchSearchMeta({
+        fetched: data.fetched_jobs_count || 0,
+        fallback: Boolean(data.used_fallback),
+        apiKeys: Boolean(data.api_keys_configured),
+        message: data.message || (nextMatches.length === 0 ? t('noFreshMatchingJobs') : ''),
+        providerWarning: data.provider_warning || '',
+        hasMore: Boolean(data.has_more),
+        total: data.total_available || nextMatches.length,
+        offset: data.offset || 0,
+        limit: data.limit || 20,
+      })
+      if (data.corrected_job_title) {
+        setDashboardCorrectionHint(`${t('didYouMean')}: ${data.corrected_job_title}?`)
+      }
+    } catch (err) {
+      if (!append) {
+        setMatches([])
+      }
+      setMatchesError(err.message)
+    } finally {
+      setMatchesLoading(false)
+      setMatchesLoadingMore(false)
+    }
+  }
 
   useEffect(() => {
     const loadMe = async () => {
       try {
-        const response = await fetch(`${apiBaseUrl}/auth/me`, {
+        const response = await fetchWithFallback('/auth/me', {
           headers: {
             Authorization: `Bearer ${token}`,
           },
@@ -301,12 +1306,16 @@ function DashboardPage({ currentUser, token, onAuthInvalid }) {
         setVerifiedUser(data)
         setCvStatus(data.cv_status || null)
         setPreferences({
+          search_text: '',
           country: data.preferences?.country || '',
           city: data.preferences?.city || '',
+          job_title: data.preferences?.job_title || '',
           work_mode: data.preferences?.work_mode || '',
           job_type: data.preferences?.job_type || '',
           experience_level: data.preferences?.experience_level || '',
         })
+        loadCountryOptions()
+        loadCityOptions('Germany', data.preferences?.city || '')
       } catch (err) {
         setAuthError(err.message)
         onAuthInvalid()
@@ -319,7 +1328,7 @@ function DashboardPage({ currentUser, token, onAuthInvalid }) {
   useEffect(() => {
     const loadJobs = async () => {
       try {
-        const response = await fetch(`${apiBaseUrl}/jobs`)
+        const response = await fetchWithFallback('/jobs')
         if (!response.ok) return
         const data = await response.json()
         setJobs(data)
@@ -330,7 +1339,7 @@ function DashboardPage({ currentUser, token, onAuthInvalid }) {
 
     const loadApplications = async () => {
       try {
-        const response = await fetch(`${apiBaseUrl}/applications`, {
+        const response = await fetchWithFallback('/applications', {
           headers: {
             Authorization: `Bearer ${token}`,
           },
@@ -348,54 +1357,18 @@ function DashboardPage({ currentUser, token, onAuthInvalid }) {
   }, [token])
 
   useEffect(() => {
-    const loadMatches = async () => {
-      try {
-        setMatchesError('')
-        const response = await fetch(`${apiBaseUrl}/matching`, {
-          headers: {
-            Authorization: `Bearer ${token}`,
-          },
-        })
-        const data = await response.json()
-        if (!response.ok) {
-          throw new Error(data.detail || 'Could not load AI matches')
-        }
-        setMatches(data.items || [])
-        setCvStatus(data.cv_status || cvStatus)
-        if (data.preferences) {
-          setPreferences({
-            country: data.preferences.country || '',
-            city: data.preferences.city || '',
-            work_mode: data.preferences.work_mode || '',
-            job_type: data.preferences.job_type || '',
-            experience_level: data.preferences.experience_level || '',
-          })
-        }
-      } catch (err) {
-        setMatches([])
-        setMatchesError(err.message)
-      }
-    }
-
-    loadMatches()
+    runDashboardSearch({ append: false })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [token])
 
   const stats = useMemo(
     () => ({
-      totalJobs: jobs.length,
-      remoteJobs: jobs.filter((job) => job.location.toLowerCase().includes('remote')).length,
+      totalJobs: matchSearchMeta.total || matches.length,
+      remoteJobs: matches.filter((job) => `${job.location || ''}`.toLowerCase().includes('remote')).length,
       applicationsCount: applications.length,
     }),
-    [jobs, applications]
+    [matches, matchSearchMeta.total, applications]
   )
-
-  const sendMessage = () => {
-    if (!input.trim()) return
-    const userMessage = { role: 'user', content: input }
-    const botMessage = { role: 'bot', content: chatbotReply(input, jobs) }
-    setMessages((prev) => [...prev, userMessage, botMessage])
-    setInput('')
-  }
 
   const handleCvUpload = async (event) => {
     event.preventDefault()
@@ -411,7 +1384,7 @@ function DashboardPage({ currentUser, token, onAuthInvalid }) {
     formData.append('file', cvFile)
 
     try {
-      const response = await fetch(`${apiBaseUrl}/profile/cv`, {
+      const response = await fetchWithFallback('/profile/cv', {
         method: 'POST',
         headers: {
           Authorization: `Bearer ${token}`,
@@ -428,209 +1401,325 @@ function DashboardPage({ currentUser, token, onAuthInvalid }) {
       setCvStatus(data.cv_status || null)
       setCvFile(null)
 
-      const matchResponse = await fetch(`${apiBaseUrl}/matching`, {
-        headers: {
-          Authorization: `Bearer ${token}`,
-        },
-      })
-      const matchData = await matchResponse.json()
-      if (!matchResponse.ok) {
-        throw new Error(matchData.detail || 'Could not refresh AI matches')
-      }
-      setMatches(matchData.items || [])
-      setMatchesError('')
+      await runDashboardSearch({ append: false })
     } catch (err) {
       setUploadError(err.message)
     }
   }
 
-  const handlePreferencesSave = async (event) => {
+  const handleModeSearch = async (event) => {
     event.preventDefault()
     setPreferencesError('')
-    setPreferencesMessage('')
-    try {
-      const response = await fetch(`${apiBaseUrl}/profile/preferences`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}`,
-        },
-        body: JSON.stringify(preferences),
-      })
-      const data = await response.json()
-      if (!response.ok) {
-        throw new Error(data.detail || 'Could not save preferences')
-      }
-      setPreferencesMessage(data.message || 'Preferences saved')
-
-      const matchResponse = await fetch(`${apiBaseUrl}/matching`, {
-        headers: {
-          Authorization: `Bearer ${token}`,
-        },
-      })
-      const matchData = await matchResponse.json()
-      if (matchResponse.ok) {
-        setMatches(matchData.items || [])
-      }
-    } catch (err) {
-      setPreferencesError(err.message)
-    }
+    await runDashboardSearch({ append: false, overridePreferences: preferences })
   }
 
   return (
     <section className="dashboard-grid">
-      <article className="card">
-        <h2>Dashboard</h2>
+      <article className="card dashboard-sidebar">
+        <h2>{t('dashboardTitle')}</h2>
         {authError && <p className="error">{authError}</p>}
-        <p>Welcome, {verifiedUser?.name || currentUser?.name || 'User'}</p>
+        <p>{t('welcome')}, {verifiedUser?.name || currentUser?.name || t('userFallback')}</p>
         <p>Email: {verifiedUser?.email || currentUser?.email || '-'}</p>
-        <p>Total jobs: {stats.totalJobs}</p>
-        <p>Remote jobs: {stats.remoteJobs}</p>
-        <p>My applications: {stats.applicationsCount}</p>
-        <p>CV uploaded: {cvStatus?.has_cv ? 'Yes' : 'No'}</p>
-        {cvStatus?.cv_filename && <p>CV file: {cvStatus.cv_filename}</p>}
+        <p>{t('totalJobs')}: {stats.totalJobs}</p>
+        <p>{t('remoteJobs')}: {stats.remoteJobs}</p>
+        <p>{t('myApplications')}: {stats.applicationsCount}</p>
+        <p>{t('cvUploaded')}: {cvStatus?.has_cv ? t('yes') : t('no')}</p>
+        {cvStatus?.cv_filename && <p>{t('cvFile')}: {cvStatus.cv_filename}</p>}
 
-        <h3>My Applications</h3>
+        <h3>{t('myApplications')}</h3>
         <div className="applications-list">
-          {applications.length === 0 && <p>No applications yet.</p>}
+          {applications.length === 0 && <p>{t('noApplications')}</p>}
           {applications.map((item) => (
             <div className="application-item" key={item.id}>
               <strong>{item.job_title}</strong>
               <p>{item.company}</p>
-              <small>Status: {item.status}</small>
+              <small>{t('status')}: {item.status}</small>
             </div>
           ))}
         </div>
 
-        <h3>Upload CV</h3>
-        <form className="form-grid" onSubmit={handleCvUpload}>
-          <input
-            type="file"
-            accept=".txt,.pdf"
-            onChange={(event) => setCvFile(event.target.files?.[0] || null)}
-          />
-          {uploadError && <p className="error">{uploadError}</p>}
-          {uploadMessage && <p className="success">{uploadMessage}</p>}
-          <button type="submit" className="btn">
-            Upload CV
+        <div className="actions">
+          <button
+            type="button"
+            className={`btn ${searchMethod === 'upload' ? '' : 'btn-secondary'}`}
+            onClick={() => setSearchMethod('upload')}
+          >
+            {t('uploadCv')}
           </button>
-        </form>
+          <button
+            type="button"
+            className={`btn ${searchMethod === 'manual' ? '' : 'btn-secondary'}`}
+            onClick={() => setSearchMethod('manual')}
+          >
+            {t('searchManual')}
+          </button>
+        </div>
 
-        <h3>Job Preferences</h3>
-        <form className="form-grid" onSubmit={handlePreferencesSave}>
-          <input
-            type="text"
-            placeholder="Preferred country"
-            value={preferences.country}
-            onChange={(event) => setPreferences((prev) => ({ ...prev, country: event.target.value }))}
-          />
-          <input
-            type="text"
-            placeholder="Preferred city"
-            value={preferences.city}
-            onChange={(event) => setPreferences((prev) => ({ ...prev, city: event.target.value }))}
-          />
-          <select
-            value={preferences.work_mode}
-            onChange={(event) => setPreferences((prev) => ({ ...prev, work_mode: event.target.value }))}
-          >
-            <option value="">Work mode</option>
-            <option value="remote">Remote</option>
-            <option value="on-site">On-site</option>
-            <option value="hybrid">Hybrid</option>
-          </select>
-          <select
-            value={preferences.job_type}
-            onChange={(event) => setPreferences((prev) => ({ ...prev, job_type: event.target.value }))}
-          >
-            <option value="">Job type</option>
-            <option value="full-time">Full-time</option>
-            <option value="part-time">Part-time</option>
-            <option value="contract">Contract</option>
-            <option value="internship">Internship</option>
-          </select>
-          <select
-            value={preferences.experience_level}
-            onChange={(event) => setPreferences((prev) => ({ ...prev, experience_level: event.target.value }))}
-          >
-            <option value="">Experience level</option>
-            <option value="junior">Junior</option>
-            <option value="mid">Mid</option>
-            <option value="senior">Senior</option>
-          </select>
-          {preferencesError && <p className="error">{preferencesError}</p>}
-          {preferencesMessage && <p className="success">{preferencesMessage}</p>}
-          <button type="submit" className="btn">
-            Save Preferences
-          </button>
-        </form>
+        {searchMethod === 'upload' && (
+          <>
+            <h3>{t('uploadCv')}</h3>
+            <form className="form-grid" onSubmit={handleCvUpload}>
+              <input
+                type="file"
+                accept=".txt,.pdf,.doc,.docx,.xls,.xlsx"
+                onChange={(event) => setCvFile(event.target.files?.[0] || null)}
+              />
+              {uploadError && <p className="error">{uploadError}</p>}
+              {uploadMessage && <p className="success">{uploadMessage}</p>}
+              <button type="submit" className="btn">
+                {t('uploadCvButton')}
+              </button>
+            </form>
+          </>
+        )}
+
+        {searchMethod === 'manual' && (
+          <>
+            <h3>{t('quickSearch')}</h3>
+            <form className="form-grid search-form" onSubmit={handleModeSearch}>
+              <select
+                value=""
+                onChange={(event) => {
+                  const value = event.target.value
+                  if (!value) return
+                  setPreferences((prev) => ({ ...prev, job_title: value }))
+                  loadDashboardTitleSuggestions(value)
+                }}
+              >
+                <option value="">{t('whatJob')}</option>
+                {POPULAR_JOB_OPTIONS.map((option) => (
+                  <option key={`dashboard-job-option-${option.value}`} value={option.value}>
+                    {getJobLabel(option, lang)}
+                  </option>
+                ))}
+              </select>
+              <input
+                type="text"
+                placeholder={t('whatJob')}
+                list="dashboard-job-title-suggestions"
+                value={preferences.job_title}
+                onChange={(event) => {
+                  const value = event.target.value
+                  setPreferences((prev) => ({ ...prev, job_title: value }))
+                  loadDashboardTitleSuggestions(value)
+                }}
+              />
+              <datalist id="dashboard-job-title-suggestions">
+                {dashboardTitleSuggestions.map((title) => (
+                  <option key={`dashboard-title-${title}`} value={title} />
+                ))}
+              </datalist>
+              <input type="hidden" value={preferences.country || 'Germany'} />
+              <input
+                type="text"
+                placeholder={t('cityPlaceholder')}
+                list="dashboard-city-suggestions"
+                value={preferences.city}
+                onChange={(event) => {
+                  const value = event.target.value
+                  setPreferences((prev) => ({ ...prev, city: value }))
+                  loadCityOptions('Germany', value)
+                }}
+              />
+              <label>
+                {t('radius')}
+                <select
+                  value={preferences.radius_km}
+                  onChange={(event) => setPreferences((prev) => ({ ...prev, radius_km: Number(event.target.value) || 20 }))}
+                >
+                  <option value={5}>{t('km5')}</option>
+                  <option value={10}>{t('km10')}</option>
+                  <option value={20}>{t('km20')}</option>
+                  <option value={30}>{t('km30')}</option>
+                  <option value={50}>{t('km50')}</option>
+                  <option value={100}>{t('km100')}</option>
+                </select>
+              </label>
+              <datalist id="dashboard-city-suggestions">
+                {cityOptions.map((city) => (
+                  <option key={`dashboard-city-${city}`} value={city} />
+                ))}
+              </datalist>
+              {dashboardNearbyCities.length > 0 && (
+                <div className="actions">
+                  {dashboardNearbyCities.map((nearCity) => (
+                    <button
+                      key={`dashboard-near-${nearCity}`}
+                      type="button"
+                      className="btn btn-secondary"
+                      onClick={async () => {
+                        const nextPreferences = { ...preferences, city: nearCity }
+                        setPreferences(nextPreferences)
+                        await runDashboardSearch({ append: false, overridePreferences: nextPreferences })
+                      }}
+                    >
+                      {nearCity}
+                    </button>
+                  ))}
+                </div>
+              )}
+              {(preferences.country || '').trim().toLowerCase() === 'germany' && (preferences.city || '').trim() && (
+                <p className="success">{t('nearbyCitiesHint')}</p>
+              )}
+              {(preferences.country || '').trim() && !(preferences.city || '').trim() && (
+                <p className="success">{t('searchAll')} {(preferences.country || '').trim()}</p>
+              )}
+              <details>
+                <summary>{t('advancedFilters')}</summary>
+                <div className="form-grid">
+                  <select
+                    value={preferences.work_mode}
+                    onChange={(event) => setPreferences((prev) => ({ ...prev, work_mode: event.target.value }))}
+                  >
+                    <option value="">{t('workMode')}</option>
+                    <option value="remote">{t('remote')}</option>
+                    <option value="on-site">{t('onsite')}</option>
+                    <option value="hybrid">{t('hybrid')}</option>
+                  </select>
+                  <select
+                    value={preferences.job_type}
+                    onChange={(event) => setPreferences((prev) => ({ ...prev, job_type: event.target.value }))}
+                  >
+                    <option value="">{t('jobType')}</option>
+                    <option value="full-time">{t('fullTime')}</option>
+                    <option value="part-time">{t('partTime')}</option>
+                    <option value="contract">{t('contract')}</option>
+                    <option value="internship">{t('internship')}</option>
+                  </select>
+                  <select
+                    value={preferences.experience_level}
+                    onChange={(event) => setPreferences((prev) => ({ ...prev, experience_level: event.target.value }))}
+                  >
+                    <option value="">{t('experienceLevel')}</option>
+                    <option value="junior">{t('junior')}</option>
+                    <option value="mid">{t('mid')}</option>
+                    <option value="senior">{t('senior')}</option>
+                  </select>
+                </div>
+              </details>
+              {preferencesError && <p className="error">{preferencesError}</p>}
+              <button type="submit" className="btn" disabled={matchesLoading}>
+                {matchesLoading ? t('searching') : t('search')}
+              </button>
+            </form>
+            {dashboardCorrectionHint && <p className="success">{dashboardCorrectionHint}</p>}
+          </>
+        )}
       </article>
-      <article className="card chatbot">
-        <h2>AI Job Assistant</h2>
-        <h3>AI Matching</h3>
+      <article className="card chatbot dashboard-results">
+        <h2>{t('jobRecommendations')}</h2>
+        <h3>{t('aiMatching')}</h3>
         {matchesError && <p className="error">{matchesError}</p>}
+        {!matchesError && (
+          <p>
+            {matches.length > 0
+              ? `${t('showingJobs')} ${matches.length} ${t('jobsCountSuffix')}`
+              : (matchSearchMeta.message || t('noMatchingJobsBroader'))}
+          </p>
+        )}
         <div className="matches-list">
-          {matches.length === 0 && !matchesError && <p>No AI matches yet. Upload your CV first.</p>}
-          {matches.slice(0, 3).map((item) => (
+          {matches.length === 0 && !matchesError && !matchSearchMeta.message && <p>{t('noMatches')}</p>}
+          {matches.map((item) => (
             <div className="match-item" key={item.job_id}>
+              {item.company_logo_url && (
+                <img className="job-logo" src={item.company_logo_url} alt={`${item.company || 'Company'} logo`} loading="lazy" />
+              )}
               <strong>{item.title}</strong>
               <p>
-                {item.company} - {item.location}
+                {item.company} - {item.city || item.location}
               </p>
-              <small>Match Score: {item.score}%</small>
-              <small>Skills Score: {item.skill_score}% | Preference Score: {item.preference_score}%</small>
-              {item.missing_skills?.length > 0 && (
-                <p className="missing-skills">Top missing skills: {item.missing_skills.join(', ')}</p>
-              )}
-              {item.preference_matched?.length > 0 && (
-                <p className="pref-match">Preference match: {item.preference_matched.slice(0, 2).join(' | ')}</p>
-              )}
-              {item.preference_not_matched?.length > 0 && (
-                <p className="pref-mismatch">
-                  Preference mismatch: {item.preference_not_matched.slice(0, 2).join(' | ')}
+              {item.source && <small>{t('source')}: {item.source}</small>}
+              {item.work_mode && <small>{item.work_mode}</small>}
+              {item.distance_label && <small>{item.distance_label}</small>}
+              <small>{formatPostedAgeLabel(item)}</small>
+              <small>{t('matchScore')}: {item.score}%</small>
+              <p>{getShortReason(item)}</p>
+              {isValidApplyUrl(item.apply_url) && !item.is_sample_demo && (
+                <p>
+                  <a href={item.apply_url} target="_blank" rel="noopener noreferrer">
+                  {t('applyEmployer')}
+                  </a>
                 </p>
               )}
-              {item.reasons?.map((reason, idx) => (
-                <p key={`${item.job_id}-reason-${idx}`}>{reason}</p>
-              ))}
             </div>
           ))}
         </div>
-        <h3>CV Improvement Tips</h3>
-        <div className="tips-list">
-          {matches.length === 0 && !matchesError && <p>Upload your CV to receive ATS improvement tips.</p>}
-          {matches.slice(0, 3).map((item) => (
-            <div className="tip-item" key={`tips-${item.job_id}`}>
-              <strong>
-                {item.title} ({item.score}%)
-              </strong>
-              <ol>
-                {(item.cv_improvement_tips || []).slice(0, 3).map((tip, idx) => (
-                  <li key={`tip-${item.job_id}-${idx}`}>{tip}</li>
-                ))}
-              </ol>
-            </div>
-          ))}
-        </div>
-        <div className="chat-stream">
-          {messages.map((message, index) => (
-            <p key={`${message.role}-${index}`} className={`bubble ${message.role}`}>
-              {message.content}
-            </p>
-          ))}
-        </div>
-        <div className="chat-input">
-          <input
-            type="text"
-            value={input}
-            onChange={(event) => setInput(event.target.value)}
-            placeholder="Ask for a job suggestion"
-          />
-          <button type="button" className="btn" onClick={sendMessage}>
-            Send
-          </button>
-        </div>
+        {matchSearchMeta.hasMore && (
+          <div className="job-actions">
+            <button
+              type="button"
+              className="btn"
+              onClick={() => runDashboardSearch({ append: true })}
+              disabled={matchesLoadingMore}
+            >
+              {matchesLoadingMore ? t('loadingMore') : t('loadMore')}
+            </button>
+          </div>
+        )}
       </article>
+    </section>
+  )
+}
+
+function ChatbotPage({ token, lang }) {
+  const t = (key) => tFor(lang, key)
+  const [messages, setMessages] = useState([
+    { role: 'assistant', content: 'Hi! I am your Smart Job assistant. Ask me about jobs, CV, or interviews.' },
+  ])
+  const [input, setInput] = useState('')
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState('')
+
+  const sendMessage = async (event) => {
+    event.preventDefault()
+    const text = input.trim()
+    if (!text || loading) return
+    setError('')
+    setLoading(true)
+    setMessages((prev) => [...prev, { role: 'user', content: text }])
+    setInput('')
+    try {
+      const headers = { 'Content-Type': 'application/json' }
+      if (token) headers.Authorization = `Bearer ${token}`
+      const response = await fetchWithFallback('/chatbot/message', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ message: text }),
+      })
+      const data = await response.json()
+      if (!response.ok) {
+        throw new Error(data.detail || 'Chatbot request failed')
+      }
+      setMessages((prev) => [...prev, { role: 'assistant', content: data.reply || 'No response.' }])
+    } catch (err) {
+      setError(err.message || 'Chatbot failed')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  return (
+    <section className="card chatbot">
+      <h2>{t('chatbot')}</h2>
+      {error && <p className="error">{error}</p>}
+      <div className="chat-stream">
+        {messages.map((message, idx) => (
+          <div key={`chat-msg-${idx}`} className={`bubble ${message.role === 'user' ? 'user' : 'bot'}`}>
+            {message.content}
+          </div>
+        ))}
+      </div>
+      <form className="chat-input" onSubmit={sendMessage}>
+        <input
+          type="text"
+          placeholder="Ask anything..."
+          value={input}
+          onChange={(e) => setInput(e.target.value)}
+        />
+        <button type="submit" className="btn" disabled={loading}>
+          {loading ? t('searching') : t('search')}
+        </button>
+      </form>
     </section>
   )
 }
@@ -643,6 +1732,7 @@ function ProtectedRoute({ isAuthenticated, children }) {
 }
 
 function App() {
+  const [lang, setLang] = useState(() => localStorage.getItem('ui_lang') || 'en')
   const [token, setToken] = useState(() => localStorage.getItem('auth_token') || '')
   const [currentUser, setCurrentUser] = useState(() => {
     const raw = localStorage.getItem('auth_user')
@@ -650,6 +1740,12 @@ function App() {
   })
 
   const isAuthenticated = Boolean(token)
+
+  useEffect(() => {
+    localStorage.setItem('ui_lang', lang)
+    document.documentElement.lang = lang
+    document.documentElement.dir = RTL_LANGS.has(lang) ? 'rtl' : 'ltr'
+  }, [lang])
 
   const handleLogin = (newToken, user) => {
     setToken(newToken)
@@ -662,7 +1758,7 @@ function App() {
     const currentToken = localStorage.getItem('auth_token')
     if (currentToken) {
       try {
-        await fetch(`${apiBaseUrl}/auth/logout`, {
+        await fetchWithFallback('/auth/logout', {
           method: 'POST',
           headers: {
             Authorization: `Bearer ${currentToken}`,
@@ -685,17 +1781,18 @@ function App() {
 
   return (
     <BrowserRouter>
-      <Layout isAuthenticated={isAuthenticated} onLogout={handleLogout}>
+      <Layout isAuthenticated={isAuthenticated} onLogout={handleLogout} lang={lang} onLangChange={setLang}>
         <Routes>
-          <Route path="/" element={<HomePage />} />
-          <Route path="/login" element={<LoginPage onLogin={handleLogin} />} />
-          <Route path="/register" element={<RegisterPage />} />
-          <Route path="/jobs" element={<JobsPage token={token} />} />
+          <Route path="/" element={<HomePage lang={lang} />} />
+          <Route path="/login" element={<LoginPage onLogin={handleLogin} lang={lang} />} />
+          <Route path="/register" element={<RegisterPage lang={lang} />} />
+          <Route path="/jobs" element={<JobsPage token={token} lang={lang} />} />
+          <Route path="/chatbot" element={<ChatbotPage token={token} lang={lang} />} />
           <Route
             path="/dashboard"
             element={
               <ProtectedRoute isAuthenticated={isAuthenticated}>
-                <DashboardPage currentUser={currentUser} token={token} onAuthInvalid={handleAuthInvalid} />
+                <DashboardPage currentUser={currentUser} token={token} onAuthInvalid={handleAuthInvalid} lang={lang} />
               </ProtectedRoute>
             }
           />
