@@ -6,7 +6,7 @@ cd /d %ROOT%\backend
 
 if exist "%ROOT%\venv\Scripts\python.exe" (
   "%ROOT%\venv\Scripts\python.exe" -m alembic upgrade head
-  "%ROOT%\venv\Scripts\python.exe" -m uvicorn main:app --reload --port 8002
+  "%ROOT%\venv\Scripts\python.exe" -m uvicorn main:app --reload --host 127.0.0.1 --port 8002
 ) else (
   echo venv python not found at %ROOT%\venv\Scripts\python.exe
   echo Run backend manually from your active environment.

@@ -15,7 +15,7 @@ from urllib.parse import urlparse, quote_plus
 from urllib.request import Request, urlopen
 from xml.etree import ElementTree as ET
 
-from fastapi import Depends, FastAPI, File, Header, HTTPException, UploadFile
+from fastapi import Depends, FastAPI, File, Header, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 from pypdf import PdfReader
@@ -31,6 +31,7 @@ from job_fetcher import (
     autocorrect_job_title,
     build_short_match_reason,
     fetch_real_jobs,
+    get_last_fetch_diagnostics,
     suggest_job_titles,
 )
 from models import Application, AuthToken, Job, User
@@ -82,10 +83,13 @@ GERMANY_NEARBY_CITIES = {
 app = FastAPI()
 default_origins = "http://localhost:5173,http://127.0.0.1:5173,http://localhost:5174,http://127.0.0.1:5174"
 cors_origins = [origin.strip() for origin in os.getenv("CORS_ORIGINS", default_origins).split(",") if origin.strip()]
+default_origin_regex = r"^https?://(localhost|127\.0\.0\.1|0\.0\.0\.0|192\.168\.\d{1,3}\.\d{1,3})(:\d+)?$"
+cors_origin_regex = os.getenv("CORS_ORIGIN_REGEX", default_origin_regex).strip() or None
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=cors_origins,
+    allow_origin_regex=cors_origin_regex,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -132,6 +136,7 @@ class ChatbotPayload(BaseModel):
     message: str
 
 ALL_VALUES = {"all", "any", "*", "all countries", "all cities"}
+PLACEHOLDER_VALUES = {"string", "null", "none", "undefined", "n/a", "-"}
 FRESH_DAYS = 7
 RADIUS_OPTIONS = {5, 10, 20, 30, 50, 100}
 COUNTRY_CITY_SEEDS = {
@@ -509,8 +514,22 @@ def parse_job_skills(job: Job) -> set[str]:
 
 
 def upsert_fetched_jobs(db: Session, jobs: list[dict]) -> int:
+    def _parse_posted_at(value: str | None) -> datetime | None:
+        raw = (value or "").strip()
+        if not raw:
+            return None
+        try:
+            # Support common ISO/RFC3339 variants.
+            return datetime.fromisoformat(raw.replace("Z", "+00:00")).replace(tzinfo=None)
+        except Exception:
+            return None
+
     saved = 0
     for row in jobs:
+        apply_url = (row.get("apply_url") or "").strip()
+        if not (apply_url.startswith("http://") or apply_url.startswith("https://")):
+            # Hard requirement: only persist real jobs with a real apply link.
+            continue
         external_id = (row.get("external_id") or "").strip()
         source = (row.get("source") or "external").strip().lower()
         existing = None
@@ -524,9 +543,9 @@ def upsert_fetched_jobs(db: Session, jobs: list[dict]) -> int:
         if not existing:
             existing = Job(source=source, external_id=external_id or None)
             db.add(existing)
-
-        # Treat provider re-fetch as freshness update for presentation filtering.
-        existing.created_at = datetime.utcnow()
+            existing.created_at = _parse_posted_at(row.get("posted_at")) or datetime.utcnow()
+        elif not existing.created_at:
+            existing.created_at = _parse_posted_at(row.get("posted_at")) or datetime.utcnow()
         existing.title = (row.get("title") or "Unknown Role")[:160]
         existing.company = (row.get("company") or "Unknown Company")[:160]
         existing.location = (row.get("location") or "Unknown")[:120]
@@ -537,7 +556,7 @@ def upsert_fetched_jobs(db: Session, jobs: list[dict]) -> int:
         existing.city = normalized_city[:120] or None
         existing.work_mode = (row.get("work_mode") or "")[:40] or None
         existing.job_type = (row.get("job_type") or "")[:40] or None
-        existing.apply_url = (row.get("apply_url") or "")[:600] or None
+        existing.apply_url = apply_url[:600] or None
         existing.description = (row.get("description") or "")[:4000] or None
         existing.skills_csv = (row.get("skills_csv") or "")[:1200] or None
         saved += 1
@@ -919,23 +938,29 @@ def get_preferences(user: User) -> dict:
 def merge_search_preferences(base: dict, payload: JobSearchPayload | None) -> dict:
     merged = dict(base)
     if not payload:
-        return merged
-    if payload.search_text is not None:
+        payload = None
+    if payload and payload.search_text is not None:
         merged["search_text"] = payload.search_text
-    if payload.country is not None:
+    if payload and payload.country is not None:
         merged["country"] = payload.country
-    if payload.city is not None:
+    if payload and payload.city is not None:
         merged["city"] = payload.city
-    if payload.job_title is not None:
+    if payload and payload.job_title is not None:
         merged["job_title"] = payload.job_title
-    if payload.radius_km is not None:
+    if payload and payload.radius_km is not None:
         merged["radius_km"] = payload.radius_km
-    if payload.work_mode is not None:
+    if payload and payload.work_mode is not None:
         merged["work_mode"] = payload.work_mode
-    if payload.job_type is not None:
+    if payload and payload.job_type is not None:
         merged["job_type"] = payload.job_type
-    if payload.experience_level is not None:
+    if payload and payload.experience_level is not None:
         merged["experience_level"] = payload.experience_level
+    for key in ["search_text", "country", "city", "job_title", "work_mode", "job_type", "experience_level"]:
+        value = str(merged.get(key) or "").strip()
+        if value.lower() in PLACEHOLDER_VALUES:
+            merged[key] = ""
+        else:
+            merged[key] = value
     return merged
 
 
@@ -1173,6 +1198,49 @@ def home():
     return {"message": "Smart Job Platform API"}
 
 
+@app.get("/health/providers")
+def health_providers(
+    request: Request,
+    x_dev_token: str = Header(default="", alias="X-Dev-Token"),
+    run_check: bool = False,
+):
+    expected_token = (os.getenv("DEV_HEALTH_TOKEN") or "").strip()
+    if not expected_token:
+        raise HTTPException(status_code=404, detail="Not found")
+    if not x_dev_token or x_dev_token != expected_token:
+        raise HTTPException(status_code=403, detail="Forbidden")
+
+    diagnostics = get_last_fetch_diagnostics()
+    response: dict = {
+        "status": "ok",
+        "mode": (os.getenv("JOB_API_PROVIDER") or "multi").strip().lower(),
+        "api_keys_configured": api_keys_configured(),
+        "ai_assist_enabled": ai_assist_enabled(),
+        "scraping_fallback_enabled": (os.getenv("ENABLE_SCRAPING_FALLBACK") or "").strip().lower() in {"1", "true", "yes", "on"},
+        "connection": {
+            "client_host": request.client.host if request.client else None,
+        },
+        "last_fetch": diagnostics,
+    }
+
+    if run_check:
+        started = time.time()
+        probe_preferences = {"job_title": "software engineer", "country": "Germany", "city": "Berlin"}
+        fetched = fetch_real_jobs(probe_preferences, "", limit=20)
+        probe_diagnostics = get_last_fetch_diagnostics()
+        response["probe"] = {
+            "requested_at_utc": datetime.utcnow().isoformat() + "Z",
+            "duration_ms": int((time.time() - started) * 1000),
+            "fetched_count": len(fetched),
+            "provider_counts": probe_diagnostics.get("provider_counts") or {},
+            "provider_failures": probe_diagnostics.get("provider_failures") or {},
+            "connection_failures": int(probe_diagnostics.get("connection_failures") or 0),
+            "provider_warning": probe_diagnostics.get("provider_warning"),
+        }
+
+    return response
+
+
 @app.get("/jobs")
 def get_jobs(db: Session = Depends(get_db)):
     fresh_since = datetime.utcnow() - timedelta(days=FRESH_DAYS)
@@ -1180,6 +1248,8 @@ def get_jobs(db: Session = Depends(get_db)):
     rows = (
         db.query(Job)
         .filter(Job.source.in_(sources))
+        .filter(Job.apply_url.isnot(None))
+        .filter(Job.apply_url != "")
         .filter(Job.created_at >= fresh_since)
         .order_by(Job.id.desc())
         .all()
@@ -1203,6 +1273,7 @@ def search_jobs(
     authorization: str = Header(default=""),
     db: Session = Depends(get_db),
 ):
+    broad_mode = (os.getenv("BROAD_SEARCH_MODE") or "1").strip().lower() in {"1", "true", "yes", "on"}
     user = get_optional_current_user(authorization, db)
     base_preferences = get_preferences(user) if user else {}
     preferences = merge_search_preferences(base_preferences, payload)
@@ -1239,17 +1310,17 @@ def search_jobs(
     except Exception:
         fetched_count = 0
 
-    def run_filtered_query(active_preferences: dict, active_radius_km: int) -> list[Job]:
+    def run_filtered_query(active_preferences: dict, active_radius_km: int, strict_title: bool = True) -> list[Job]:
         query = db.query(Job).filter(Job.source.in_(active_job_sources()))
         country_pref_local = (active_preferences.get("country") or "Germany").strip()
         city_pref_local = (active_preferences.get("city") or "").strip()
 
-        if country_pref_local and country_pref_local.lower() not in ALL_VALUES:
+        if (not broad_mode) and country_pref_local and country_pref_local.lower() not in ALL_VALUES:
             country_value = country_pref_local
             query = query.filter(
                 (Job.country.ilike(f"%{country_value}%")) | (Job.location.ilike(f"%{country_value}%"))
             )
-        if city_pref_local and city_pref_local.lower() not in ALL_VALUES:
+        if (not broad_mode) and city_pref_local and city_pref_local.lower() not in ALL_VALUES:
             city_map = _build_city_distance_map(city_pref_local)
             city_terms = [city for city, km in city_map.items() if km <= max(active_radius_km, 20)]
             city_terms.append(_norm_city(city_pref_local))
@@ -1261,16 +1332,25 @@ def search_jobs(
             if city_clauses:
                 query = query.filter(or_(*city_clauses))
         if active_preferences.get("job_title"):
-            # Keep relevance strict: match requested role terms in job title itself.
             title_terms = _title_filter_terms(active_preferences["job_title"])
-            for term in title_terms:
-                query = query.filter(Job.title.ilike(f"%{term}%"))
+            if strict_title:
+                # Strict mode: all significant terms must exist in title.
+                for term in title_terms:
+                    query = query.filter(Job.title.ilike(f"%{term}%"))
+            elif title_terms:
+                # Relaxed mode: allow any term in title/company/description.
+                relaxed_title_clauses = []
+                for term in title_terms:
+                    relaxed_title_clauses.append(Job.title.ilike(f"%{term}%"))
+                    relaxed_title_clauses.append(Job.company.ilike(f"%{term}%"))
+                    relaxed_title_clauses.append(Job.description.ilike(f"%{term}%"))
+                query = query.filter(or_(*relaxed_title_clauses))
         if active_preferences.get("work_mode"):
             query = query.filter(Job.work_mode == active_preferences["work_mode"])
 
         fresh_since = datetime.utcnow() - timedelta(days=FRESH_DAYS)
         rows = query.filter(Job.created_at >= fresh_since).order_by(Job.id.desc()).limit(500).all()
-        if city_pref_local and city_pref_local.lower() not in ALL_VALUES:
+        if (not broad_mode) and city_pref_local and city_pref_local.lower() not in ALL_VALUES:
             filtered_jobs = []
             for job in rows:
                 dist = _distance_km(city_pref_local, job)
@@ -1279,7 +1359,7 @@ def search_jobs(
             return filtered_jobs
         return rows
 
-    jobs = run_filtered_query(preferences, radius_km)
+    jobs = run_filtered_query(preferences, radius_km, strict_title=True)
     used_filter_relaxation = False
     title_requested = bool((preferences.get("job_title") or "").strip())
     if not jobs:
@@ -1291,7 +1371,10 @@ def search_jobs(
             relaxed_preferences["job_title"] = ""
             relaxed_preferences["search_text"] = ""
         relaxed_radius = max(50, radius_km)
-        relaxed_jobs = run_filtered_query(relaxed_preferences, relaxed_radius)
+        relaxed_jobs = run_filtered_query(relaxed_preferences, relaxed_radius, strict_title=not title_requested)
+        if not relaxed_jobs and title_requested:
+            # Second-chance relaxed title search for manual role queries.
+            relaxed_jobs = run_filtered_query(relaxed_preferences, relaxed_radius, strict_title=False)
         if relaxed_jobs:
             jobs = relaxed_jobs
             used_filter_relaxation = True
@@ -1323,11 +1406,32 @@ def search_jobs(
                 preferences.get("job_title") or "",
                 len(jobs),
             )
+    if not jobs:
+        global_broader_preferences = dict(preferences)
+        global_broader_preferences["work_mode"] = ""
+        global_broader_preferences["job_type"] = ""
+        global_broader_preferences["experience_level"] = ""
+        global_broader_preferences["city"] = ""
+        global_broader_preferences["radius_km"] = max(100, radius_km)
+        # Last resort for zero-results: broaden title constraints as well.
+        global_broader_preferences["job_title"] = ""
+        global_broader_preferences["search_text"] = ""
+        global_broader_jobs = run_filtered_query(global_broader_preferences, max(100, radius_km), strict_title=False)
+        if global_broader_jobs:
+            jobs = global_broader_jobs
+            used_filter_relaxation = True
+            logger.info(
+                "jobs_search global_broader_fallback_applied original_title=%s original_city=%s result_count=%s",
+                preferences.get("job_title") or "",
+                preferences.get("city") or "",
+                len(jobs),
+            )
     logger.info(
-        "jobs_search db_results raw=%s fetched_count=%s sources=%s",
+        "jobs_search db_results raw=%s fetched_count=%s sources=%s broad_mode=%s",
         len(jobs),
         fetched_count,
         ",".join(sorted({job.source for job in jobs})) if jobs else "-",
+        broad_mode,
     )
     ranked = sorted((compute_match(job, cv_text, preferences) for job in jobs), key=lambda row: row["score"], reverse=True)
     paged_items = ranked[offset : offset + limit]
@@ -1345,7 +1449,10 @@ def search_jobs(
     elif len(paged_items) > 0:
         message = "Real jobs fetched from provider."
     elif not has_api_keys:
-        message = "No fresh matching jobs found from active free providers. Optional API keys can widen coverage."
+        message = (
+            "No fresh matches for this search yet from active free providers. "
+            "Try a broader title or nearby city, or add optional API keys to widen coverage."
+        )
     else:
         message = "No fresh matching jobs found."
     return {
@@ -1362,6 +1469,7 @@ def search_jobs(
         "search_scope": "radius_city",
         "corrected_job_title": corrected_title if corrected_title and corrected_title != requested_title else None,
         "ai_assist_enabled": ai_assist_enabled(),
+        "suggested_broaden_search": len(paged_items) == 0 and not used_filter_relaxation,
     }
 
 

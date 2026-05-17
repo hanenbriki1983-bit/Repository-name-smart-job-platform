@@ -2,7 +2,8 @@
 setlocal EnableExtensions EnableDelayedExpansion
 
 set "ROOT=C:\Users\ASUS\smart-job-platform"
-set "BACKEND_PORT=8001"
+set "PYTHON_EXE=%ROOT%\venv\Scripts\python.exe"
+set "BACKEND_PORT=8002"
 set "FRONTEND_PORT=5173"
 set "FRONTEND_FALLBACK_PORT=5174"
 set "DEMO_MODE=1"
@@ -23,6 +24,12 @@ if not exist "%ROOT%\frontend\package.json" (
   pause
   exit /b 1
 )
+if not exist "%PYTHON_EXE%" (
+  echo [ERROR] Python venv not found at "%PYTHON_EXE%".
+  echo [HINT] Create venv or use start_backend.bat.
+  pause
+  exit /b 1
+)
 if not exist "C:\Program Files\nodejs\npm.cmd" (
   echo [ERROR] npm not found at "C:\Program Files\nodejs\npm.cmd".
   pause
@@ -34,7 +41,7 @@ if "!PORT_BUSY!"=="1" (
   echo [WARN] Port %BACKEND_PORT% is already in use. Backend might already be running.
 ) else (
   echo [INFO] Starting backend on port %BACKEND_PORT%...
-  start "SmartJob Backend" powershell -NoExit -ExecutionPolicy Bypass -Command "Set-Location '%ROOT%\backend'; $env:DEMO_MODE='%DEMO_MODE%'; alembic upgrade head; uvicorn main:app --reload --host 127.0.0.1 --port %BACKEND_PORT%"
+  start "SmartJob Backend" powershell -NoExit -ExecutionPolicy Bypass -Command "Set-Location '%ROOT%\backend'; $env:DEMO_MODE='%DEMO_MODE%'; & '%PYTHON_EXE%' -m alembic upgrade head; & '%PYTHON_EXE%' -m uvicorn main:app --reload --host 127.0.0.1 --port %BACKEND_PORT%"
 )
 
 call :wait_for_port %BACKEND_PORT% 40

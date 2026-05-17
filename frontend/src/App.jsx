@@ -5,7 +5,16 @@ import heroImage from './assets/hero.png'
 
 const configuredApiUrl = import.meta.env.VITE_API_URL?.trim()
 const runtimeHost = typeof window !== 'undefined' ? window.location.hostname : 'localhost'
-const localApiCandidates = [`http://${runtimeHost}:8001`, `http://${runtimeHost}:8000`]
+const localApiCandidates = Array.from(
+  new Set([
+    `http://${runtimeHost}:8001`,
+    `http://${runtimeHost}:8000`,
+    'http://127.0.0.1:8001',
+    'http://localhost:8001',
+    'http://127.0.0.1:8000',
+    'http://localhost:8000',
+  ])
+)
 
 const I18N = {
   en: {
@@ -39,7 +48,8 @@ const I18N = {
     noMatchingJobsBroader: 'No matching jobs found. Try a broader search.',
     showingJobs: 'Showing',
     jobsCountSuffix: 'jobs',
-    noFreshMatchingJobs: 'No fresh matching jobs found.',
+    noFreshMatchingJobs: 'No fresh matches for this search yet. Try a broader title or nearby city.',
+    broadenSearch: 'Try Broader Search',
     radius: 'Radius',
     km5: '5 km',
     km10: '10 km',
@@ -85,7 +95,7 @@ const I18N = {
     didYouMean: 'Did you mean',
     language: 'Language',
     loadingJobs: 'Loading jobs...',
-    uploadCvHint: 'Upload your CV from Dashboard to enable CV-based matching.',
+    uploadCvHint: 'Upload your CV here to enable CV-based matching.',
     goToDashboardUpload: 'Go to Dashboard Upload',
     pleaseLoginApply: 'Please login first to apply.',
     applicationSuccess: 'Application submitted successfully.',
@@ -147,6 +157,7 @@ const I18N = {
     showingJobs: 'Angezeigt werden',
     jobsCountSuffix: 'Jobs',
     noFreshMatchingJobs: 'Keine aktuellen passenden Jobs gefunden.',
+    broadenSearch: 'Breitere Suche versuchen',
     radius: 'Radius',
     km5: '5 km',
     km10: '10 km',
@@ -192,7 +203,7 @@ const I18N = {
     didYouMean: 'Meintest du',
     language: 'Sprache',
     loadingJobs: 'Jobs werden geladen...',
-    uploadCvHint: 'Lade deinen Lebenslauf im Dashboard hoch, um CV-basiertes Matching zu aktivieren.',
+    uploadCvHint: 'Lade deinen Lebenslauf hier hoch, um CV-basiertes Matching zu aktivieren.',
     goToDashboardUpload: 'Zum Dashboard-Upload',
     pleaseLoginApply: 'Bitte melde dich zuerst an, um dich zu bewerben.',
     applicationSuccess: 'Bewerbung erfolgreich gesendet.',
@@ -254,6 +265,7 @@ const I18N = {
     showingJobs: 'عرض',
     jobsCountSuffix: 'وظيفة',
     noFreshMatchingJobs: 'لم يتم العثور على وظائف حديثة مطابقة.',
+    broadenSearch: 'جرّب بحثًا أوسع',
     radius: 'المسافة',
     km5: '5 كم',
     km10: '10 كم',
@@ -299,7 +311,7 @@ const I18N = {
     didYouMean: 'هل تقصد',
     language: 'اللغة',
     loadingJobs: 'جاري تحميل الوظائف...',
-    uploadCvHint: 'ارفع سيرتك الذاتية من لوحة التحكم لتفعيل المطابقة المعتمدة على السيرة.',
+    uploadCvHint: 'ارفع سيرتك الذاتية هنا لتفعيل المطابقة المعتمدة على السيرة.',
     goToDashboardUpload: 'الذهاب إلى رفع السيرة في اللوحة',
     pleaseLoginApply: 'يرجى تسجيل الدخول أولاً للتقديم.',
     applicationSuccess: 'تم إرسال الطلب بنجاح.',
@@ -544,7 +556,6 @@ function Layout({ children, isAuthenticated, onLogout, lang, onLangChange }) {
           {!isAuthenticated && <NavLink to="/register">{t('register')}</NavLink>}
           <NavLink to="/jobs">{t('jobs')}</NavLink>
           <NavLink to="/chatbot">{t('chatbot')}</NavLink>
-          <NavLink to="/dashboard">{t('dashboard')}</NavLink>
           {isAuthenticated && (
             <button type="button" className="link-btn" onClick={onLogout}>
               {t('logout')}
@@ -613,7 +624,7 @@ function LoginPage({ onLogin, lang }) {
       }
 
       onLogin(data.token, data.user)
-      navigate('/dashboard')
+      navigate('/jobs')
     } catch (err) {
       setError(err.message)
     } finally {
@@ -635,7 +646,7 @@ function LoginPage({ onLogin, lang }) {
       }
 
       onLogin(data.token, data.user)
-      navigate('/dashboard')
+      navigate('/jobs')
     } catch (err) {
       setError(err.message)
     } finally {
@@ -750,6 +761,7 @@ function JobsPage({ token, lang }) {
     apiKeys: false,
     message: '',
     providerWarning: '',
+    canBroaden: false,
     hasMore: false,
     total: 0,
     offset: 0,
@@ -759,7 +771,45 @@ function JobsPage({ token, lang }) {
   const [titleCorrectionHint, setTitleCorrectionHint] = useState('')
   const [countryOptions, setCountryOptions] = useState([])
   const [cityOptions, setCityOptions] = useState([])
+  const [cvFile, setCvFile] = useState(null)
+  const [uploadError, setUploadError] = useState('')
+  const [uploadMessage, setUploadMessage] = useState('')
   const nearbyCities = getNearbyCities(filters.country, filters.city)
+
+  const handleCvUpload = async (event) => {
+    event.preventDefault()
+    setUploadError('')
+    setUploadMessage('')
+    if (!token) {
+      setUploadError(t('pleaseLoginApply'))
+      return
+    }
+    if (!cvFile) {
+      setUploadError('Please choose a file first.')
+      return
+    }
+    const formData = new FormData()
+    formData.append('file', cvFile)
+    try {
+      const response = await fetchWithFallback('/profile/cv', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+        body: formData,
+      })
+      const data = await response.json()
+      if (!response.ok) {
+        throw new Error(data.detail || 'CV upload failed')
+      }
+      setUploadMessage(data.message || 'CV uploaded successfully')
+      setCvFile(null)
+      setSearchMethod('manual')
+      await runSearch({ append: false })
+    } catch (err) {
+      setUploadError(err.message || 'CV upload failed')
+    }
+  }
 
   const loadTitleSuggestions = async (value) => {
     const text = (value || '').trim()
@@ -821,9 +871,10 @@ function JobsPage({ token, lang }) {
     }
   }
 
-  const runSearch = async ({ append = false } = {}) => {
+  const runSearch = async ({ append = false, overrideFilters = null } = {}) => {
+    const activeFilters = overrideFilters || filters
     const nextOffset = append ? jobs.length : 0
-    const effectiveJobTitle = normalizeJobTitleForSearch(filters.job_title)
+    const effectiveJobTitle = normalizeJobTitleForSearch(activeFilters.job_title)
     if (append) {
       setLoadingMore(true)
     } else {
@@ -839,9 +890,9 @@ function JobsPage({ token, lang }) {
         method: 'POST',
         headers,
         body: JSON.stringify({
-          ...filters,
+          ...activeFilters,
           job_title: effectiveJobTitle,
-          search_text: (filters.search_text || filters.job_title || '').trim(),
+          search_text: (activeFilters.search_text || activeFilters.job_title || '').trim(),
           limit: 20,
           offset: nextOffset,
         }),
@@ -861,7 +912,7 @@ function JobsPage({ token, lang }) {
           if (rawResponse.ok) {
             const rawData = await rawResponse.json()
             const rawItems = normalizeItems(rawData)
-            const filteredFallback = filterJobsClientSide(rawItems, filters, { exactTitleRequired: true, includeNearbyCities: true })
+            const filteredFallback = filterJobsClientSide(rawItems, activeFilters, { exactTitleRequired: false, includeNearbyCities: true })
             console.log('[JobsPage] /jobs fallback items.length =', rawItems.length, 'filtered =', filteredFallback.length)
             nextJobs = filteredFallback
           }
@@ -876,6 +927,7 @@ function JobsPage({ token, lang }) {
           ...prev,
           message: data.message || t('noFreshMatchingJobs'),
           providerWarning: data.provider_warning || '',
+          canBroaden: Boolean(data.suggested_broaden_search),
           total: 0,
           hasMore: false,
         }))
@@ -886,6 +938,7 @@ function JobsPage({ token, lang }) {
         apiKeys: Boolean(data.api_keys_configured),
         message: data.message || (nextJobs.length === 0 ? t('noFreshMatchingJobs') : ''),
         providerWarning: data.provider_warning || '',
+        canBroaden: Boolean(data.suggested_broaden_search),
         hasMore: Boolean(data.has_more),
         total: data.total_available || nextJobs.length,
         offset: data.offset || 0,
@@ -901,6 +954,19 @@ function JobsPage({ token, lang }) {
       setLoading(false)
       setLoadingMore(false)
     }
+  }
+
+  const runBroaderSearch = async () => {
+    const broader = {
+      ...filters,
+      city: '',
+      radius_km: 100,
+      work_mode: '',
+      job_type: '',
+      experience_level: '',
+    }
+    setFilters(broader)
+    await runSearch({ append: false, overrideFilters: broader })
   }
 
   useEffect(() => {
@@ -931,11 +997,16 @@ function JobsPage({ token, lang }) {
       </div>
 
       {searchMethod === 'upload' && (
-        <form className="form-grid" onSubmit={(event) => event.preventDefault()}>
+        <form className="form-grid" onSubmit={handleCvUpload}>
           <p>{t('uploadCvHint')}</p>
-          <a className="btn" href="/dashboard">
-            {t('goToDashboardUpload')}
-          </a>
+          <input
+            type="file"
+            accept=".txt,.pdf,.doc,.docx,.xls,.xlsx"
+            onChange={(event) => setCvFile(event.target.files?.[0] || null)}
+          />
+          {uploadError && <p className="error">{uploadError}</p>}
+          {uploadMessage && <p className="success">{uploadMessage}</p>}
+          <button type="submit" className="btn">{t('uploadCvButton')}</button>
         </form>
       )}
 
@@ -1077,6 +1148,13 @@ function JobsPage({ token, lang }) {
             ? `${t('showingJobs')} ${jobs.length} ${t('jobsCountSuffix')}`
             : (searchMeta.message || t('noMatchingJobsBroader'))}
         </p>
+      )}
+      {!loading && !error && jobs.length === 0 && searchMeta.canBroaden && (
+        <div className="job-actions">
+          <button type="button" className="btn btn-secondary" onClick={runBroaderSearch}>
+            {t('broadenSearch')}
+          </button>
+        </div>
       )}
       <div className="jobs-list">
         {jobs.map((job) => (
@@ -1256,7 +1334,7 @@ function DashboardPage({ currentUser, token, onAuthInvalid, lang }) {
           if (rawResponse.ok) {
             const rawData = await rawResponse.json()
             const rawItems = normalizeItems(rawData)
-            const filteredFallback = filterJobsClientSide(rawItems, activePreferences || {}, { exactTitleRequired: true, includeNearbyCities: true })
+            const filteredFallback = filterJobsClientSide(rawItems, activePreferences || {}, { exactTitleRequired: false, includeNearbyCities: true })
             console.log('[Dashboard] /jobs fallback items.length =', rawItems.length, 'filtered =', filteredFallback.length)
             nextMatches = filteredFallback
           }
@@ -1788,14 +1866,6 @@ function App() {
           <Route path="/register" element={<RegisterPage lang={lang} />} />
           <Route path="/jobs" element={<JobsPage token={token} lang={lang} />} />
           <Route path="/chatbot" element={<ChatbotPage token={token} lang={lang} />} />
-          <Route
-            path="/dashboard"
-            element={
-              <ProtectedRoute isAuthenticated={isAuthenticated}>
-                <DashboardPage currentUser={currentUser} token={token} onAuthInvalid={handleAuthInvalid} lang={lang} />
-              </ProtectedRoute>
-            }
-          />
         </Routes>
       </Layout>
     </BrowserRouter>

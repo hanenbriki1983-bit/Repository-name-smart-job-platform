@@ -22,3 +22,22 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+# Python
+venv/
+__pycache__/
+*.pyc
+
+# Environment files
+.env
+backend/.env
+frontend/.env
+
+# Build/cache
+build/
+.cache/
+
+# SQLite database
+*.db
+
+# OS files
+Thumbs.db

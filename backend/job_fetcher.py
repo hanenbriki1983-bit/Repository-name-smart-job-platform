@@ -7,6 +7,7 @@ from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 from urllib.error import URLError, HTTPError
 import xml.etree.ElementTree as ET
+import requests
 from web_scraper import scrape_jobs_from_web
 
 logger = logging.getLogger("smartjob.backend.providers")
@@ -84,6 +85,20 @@ KNOWN_JOB_TITLES = [
 
 RELATED_QUERY_TERMS = {
     "nurse": ["nurse", "pflegefachkraft", "pflegehelfer", "krankenschwester", "altenpfleger", "gesundheits und krankenpfleger"],
+    "plumber": ["plumber", "installateur", "sanitar", "heizung", "sanitaer", "klempner", "سباك"],
+    "electrician": ["electrician", "elektriker", "elektroinstallateur", "كهربائي"],
+    "housekeeping": ["housekeeping", "zimmermaedchen", "reinigungskraft", "housekeeper", "تدبير منزلي"],
+}
+
+TITLE_ALIASES = {
+    "سباك": "Plumber",
+    "plomberie": "Plumber",
+    "klempner": "Plumber",
+    "installateur": "Plumber",
+    "elektriker": "Electrician",
+    "kellner": "Waiter",
+    "krankenpfleger": "Nurse",
+    "pflegehelfer": "Nursing Assistant",
 }
 
 PLACEHOLDER_TOKENS = {
@@ -98,6 +113,10 @@ PLACEHOLDER_TOKENS = {
     "ضعي",
     "هنا",
 }
+
+
+def _broad_search_mode_enabled() -> bool:
+    return (os.getenv("BROAD_SEARCH_MODE") or "1").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _looks_configured(value: str) -> bool:
@@ -122,7 +141,14 @@ def scraping_fallback_enabled() -> bool:
 
 def _http_get_json(url: str, headers: dict[str, str] | None = None) -> dict[str, Any]:
     logger.info("provider_http_get url=%s", url.split("?")[0])
-    request = Request(url, headers=headers or {})
+    req_headers = headers or {}
+    try:
+        response = requests.get(url, headers=req_headers, timeout=20)
+        response.raise_for_status()
+        return response.json()
+    except Exception as req_exc:
+        logger.warning("provider_http_get requests_failed error=%s", req_exc)
+    request = Request(url, headers=req_headers)
     with urlopen(request, timeout=20) as response:  # nosec B310
         payload = response.read().decode("utf-8")
     return json.loads(payload)
@@ -130,10 +156,16 @@ def _http_get_json(url: str, headers: dict[str, str] | None = None) -> dict[str,
 
 def _http_post_json(url: str, body: dict[str, Any], headers: dict[str, str] | None = None) -> dict[str, Any]:
     logger.info("provider_http_post url=%s", url)
-    raw = json.dumps(body).encode("utf-8")
     merged_headers = {"Content-Type": "application/json"}
     if headers:
         merged_headers.update(headers)
+    try:
+        response = requests.post(url, json=body, headers=merged_headers, timeout=20)
+        response.raise_for_status()
+        return response.json()
+    except Exception as req_exc:
+        logger.warning("provider_http_post requests_failed error=%s", req_exc)
+    raw = json.dumps(body).encode("utf-8")
     request = Request(url, data=raw, headers=merged_headers, method="POST")
     with urlopen(request, timeout=20) as response:  # nosec B310
         payload = response.read().decode("utf-8")
@@ -215,6 +247,9 @@ def autocorrect_job_title(raw_title: str) -> str:
     text = (raw_title or "").strip()
     if not text:
         return ""
+    alias = TITLE_ALIASES.get(text.lower())
+    if alias:
+        return alias
     # Keep typo-correction conservative so non-tech titles (e.g. housekeeping, nurse)
     # are not incorrectly forced into software titles.
     candidate_matches = difflib.get_close_matches(text, KNOWN_JOB_TITLES, n=1, cutoff=0.55)
@@ -315,6 +350,36 @@ def _clean_results(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return list(unique.values())
 
 
+def _clean_results_with_debug(items: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], dict[str, int]]:
+    unique: dict[str, dict[str, Any]] = {}
+    rejected = {
+        "invalid_apply_url": 0,
+        "duplicate": 0,
+        "missing_title": 0,
+        "missing_company": 0,
+        "missing_location": 0,
+    }
+    for item in items:
+        if not (item.get("title") or "").strip():
+            rejected["missing_title"] += 1
+            continue
+        if not (item.get("company") or "").strip():
+            rejected["missing_company"] += 1
+            continue
+        if not (item.get("location") or "").strip():
+            rejected["missing_location"] += 1
+            continue
+        if not _has_valid_apply_url(item):
+            rejected["invalid_apply_url"] += 1
+            continue
+        key = _normalize_dedupe_key(item)
+        if key in unique:
+            rejected["duplicate"] += 1
+            continue
+        unique[key] = item
+    return list(unique.values()), rejected
+
+
 def _country_matches(text_blob: str, requested_country: str) -> bool:
     country = (requested_country or "").strip().lower()
     if not country:
@@ -378,6 +443,7 @@ def fetch_adzuna_jobs(preferences: dict | None, cv_text: str, limit: int = 25) -
                 "apply_url": row.get("redirect_url"),
                 "description": description[:4000],
                 "skills_csv": ",".join(_extract_keywords_from_cv(description)[:20]),
+                "posted_at": row.get("created"),
             }
         )
     cleaned = _clean_results(items)
@@ -426,6 +492,7 @@ def fetch_jsearch_jobs(preferences: dict | None, cv_text: str, limit: int = 25) 
                 "apply_url": row.get("job_apply_link"),
                 "description": description[:4000],
                 "skills_csv": ",".join(_extract_keywords_from_cv(description)[:20]),
+                "posted_at": row.get("job_posted_at_datetime_utc") or row.get("job_posted_at_datetime_utc"),
             }
         )
     cleaned = _clean_results(items)
@@ -435,11 +502,14 @@ def fetch_jsearch_jobs(preferences: dict | None, cv_text: str, limit: int = 25) 
 
 def fetch_arbeitnow_jobs(preferences: dict | None, cv_text: str, limit: int = 25) -> list[dict[str, Any]]:
     prefs = preferences or {}
+    broad_mode = _broad_search_mode_enabled()
     city = (prefs.get("city") or "").strip().lower()
     country = (prefs.get("country") or "").strip().lower()
     work_mode = (prefs.get("work_mode") or "").strip().lower()
     query_terms = build_search_terms(preferences, cv_text).lower().split()
     data = _http_get_json("https://www.arbeitnow.com/api/job-board-api")
+    raw_count = len(data.get("data", []))
+    rejected = {"city": 0, "country": 0, "query": 0, "work_mode": 0}
     items = []
     for row in data.get("data", []):
         title = (row.get("title") or "").strip()
@@ -448,14 +518,18 @@ def fetch_arbeitnow_jobs(preferences: dict | None, cv_text: str, limit: int = 25
         description = (row.get("description") or "")[:4000]
         tags = row.get("tags") or []
         text_blob = f"{title} {location} {' '.join(tags)} {description}".lower()
-        if city and city not in text_blob:
+        if (not broad_mode) and city and city not in text_blob:
+            rejected["city"] += 1
             continue
-        if country and not _country_matches(text_blob, country):
+        if (not broad_mode) and country and not _country_matches(text_blob, country):
+            rejected["country"] += 1
             continue
         if query_terms and not any(term in text_blob for term in query_terms[:4]):
+            rejected["query"] += 1
             continue
         detected_mode = "remote" if "remote" in text_blob else "on-site"
         if work_mode and work_mode not in {detected_mode, "hybrid"}:
+            rejected["work_mode"] += 1
             continue
         items.append(
             {
@@ -471,22 +545,34 @@ def fetch_arbeitnow_jobs(preferences: dict | None, cv_text: str, limit: int = 25
                 "apply_url": row.get("url"),
                 "description": description,
                 "skills_csv": ",".join(tags[:20]),
+                "posted_at": row.get("created_at"),
             }
         )
         if len(items) >= limit:
             break
-    cleaned = _clean_results(items)
-    logger.info("provider=arbeitnow response_count=%s cleaned_count=%s", len(items), len(cleaned))
+    cleaned, clean_rejected = _clean_results_with_debug(items)
+    logger.info(
+        "provider=arbeitnow raw_count=%s normalized_count=%s cleaned_count=%s filtered_out=%s clean_rejected=%s broad_mode=%s",
+        raw_count,
+        len(items),
+        len(cleaned),
+        rejected,
+        clean_rejected,
+        broad_mode,
+    )
     return cleaned
 
 
 def fetch_remotive_jobs(preferences: dict | None, cv_text: str, limit: int = 25) -> list[dict[str, Any]]:
     prefs = preferences or {}
+    broad_mode = _broad_search_mode_enabled()
     query = build_search_terms(preferences, cv_text)
     city = (prefs.get("city") or "").strip().lower()
     country = (prefs.get("country") or "").strip().lower()
     params = {"search": query}
     data = _http_get_json(f"https://remotive.com/api/remote-jobs?{urlencode(params)}")
+    raw_count = len(data.get("jobs", []))
+    rejected = {"city": 0, "country": 0}
     items = []
     for row in data.get("jobs", [])[:limit * 2]:
         title = row.get("title") or "Unknown Role"
@@ -494,9 +580,11 @@ def fetch_remotive_jobs(preferences: dict | None, cv_text: str, limit: int = 25)
         location = row.get("candidate_required_location") or "Remote"
         description = (row.get("description") or "")[:4000]
         text_blob = f"{title} {location} {description}".lower()
-        if city and city not in text_blob:
+        if (not broad_mode) and city and city not in text_blob:
+            rejected["city"] += 1
             continue
-        if country and not _country_matches(text_blob, country):
+        if (not broad_mode) and country and not _country_matches(text_blob, country):
+            rejected["country"] += 1
             continue
         items.append(
             {
@@ -512,13 +600,48 @@ def fetch_remotive_jobs(preferences: dict | None, cv_text: str, limit: int = 25)
                 "apply_url": row.get("url"),
                 "description": description,
                 "skills_csv": ",".join((row.get("tags") or [])[:20]),
+                "posted_at": row.get("publication_date"),
             }
         )
         if len(items) >= limit:
             break
-    cleaned = _clean_results(items)
-    logger.info("provider=remotive response_count=%s cleaned_count=%s", len(items), len(cleaned))
+    cleaned, clean_rejected = _clean_results_with_debug(items)
+    logger.info(
+        "provider=remotive raw_count=%s normalized_count=%s cleaned_count=%s filtered_out=%s clean_rejected=%s broad_mode=%s",
+        raw_count,
+        len(items),
+        len(cleaned),
+        rejected,
+        clean_rejected,
+        broad_mode,
+    )
     return cleaned
+
+
+def fetch_remotive_jobs_raw(limit: int = 20) -> list[dict[str, Any]]:
+    target = min(max(int(limit or 20), 1), 100)
+    data = _http_get_json("https://remotive.com/api/remote-jobs")
+    items: list[dict[str, Any]] = []
+    for row in (data.get("jobs") or [])[:target]:
+        items.append(
+            {
+                "source": "remotive_raw",
+                "external_id": str(row.get("id") or row.get("url") or ""),
+                "title": (row.get("title") or "Unknown Role")[:160],
+                "company": (row.get("company_name") or "Unknown Company")[:160],
+                "location": (row.get("candidate_required_location") or "Remote")[:120],
+                "country": row.get("candidate_required_location"),
+                "city": None,
+                "work_mode": "remote",
+                "job_type": (row.get("job_type") or "")[:40] or None,
+                "apply_url": row.get("url"),
+                "description": (row.get("description") or "")[:4000],
+                "posted_at": row.get("publication_date"),
+                "raw_provider_payload": row,
+            }
+        )
+    logger.info("provider=remotive_raw raw_count=%s returned_count=%s", len(data.get("jobs") or []), len(items))
+    return items
 
 
 def fetch_jooble_jobs(preferences: dict | None, cv_text: str, limit: int = 25) -> list[dict[str, Any]]:
@@ -558,6 +681,7 @@ def fetch_jooble_jobs(preferences: dict | None, cv_text: str, limit: int = 25) -
                 "apply_url": row.get("link"),
                 "description": description,
                 "skills_csv": ",".join(_extract_keywords_from_cv(description)[:20]),
+                "posted_at": row.get("updated"),
             }
         )
     cleaned = _clean_results(items)
@@ -594,12 +718,19 @@ def fetch_the_muse_jobs(preferences: dict | None, cv_text: str, limit: int = 20)
                 "apply_url": landing,
                 "description": contents,
                 "skills_csv": ",".join(_extract_keywords_from_cv(contents)[:20]),
+                "posted_at": row.get("publication_date"),
             }
         )
         if len(items) >= limit:
             break
-    cleaned = _clean_results(items)
-    logger.info("provider=themuse response_count=%s cleaned_count=%s", len(items), len(cleaned))
+    cleaned, clean_rejected = _clean_results_with_debug(items)
+    logger.info(
+        "provider=themuse raw_count=%s normalized_count=%s cleaned_count=%s clean_rejected=%s",
+        len(data.get("results", [])),
+        len(items),
+        len(cleaned),
+        clean_rejected,
+    )
     return cleaned
 
 
@@ -626,6 +757,7 @@ def fetch_indeed_compatible_jobs(preferences: dict | None, cv_text: str, limit: 
                 "apply_url": row.get("apply_url"),
                 "description": (row.get("description") or "")[:4000],
                 "skills_csv": ",".join(_extract_keywords_from_cv(row.get("description") or "")[:20]),
+                "posted_at": row.get("posted_at"),
             }
         )
     cleaned = _clean_results(items)
