@@ -50,6 +50,7 @@ const I18N = {
     jobsCountSuffix: 'jobs',
     noFreshMatchingJobs: 'No fresh matches for this search yet. Try a broader title or nearby city.',
     broadenSearch: 'Try Broader Search',
+    useAlternativeTitle: 'Use alternative title',
     radius: 'Radius',
     km5: '5 km',
     km10: '10 km',
@@ -158,6 +159,7 @@ const I18N = {
     jobsCountSuffix: 'Jobs',
     noFreshMatchingJobs: 'Keine aktuellen passenden Jobs gefunden.',
     broadenSearch: 'Breitere Suche versuchen',
+    useAlternativeTitle: 'Alternativen Titel verwenden',
     radius: 'Radius',
     km5: '5 km',
     km10: '10 km',
@@ -266,6 +268,7 @@ const I18N = {
     jobsCountSuffix: 'وظيفة',
     noFreshMatchingJobs: 'لم يتم العثور على وظائف حديثة مطابقة.',
     broadenSearch: 'جرّب بحثًا أوسع',
+    useAlternativeTitle: 'استخدم مسمى بديل',
     radius: 'المسافة',
     km5: '5 كم',
     km10: '10 كم',
@@ -438,6 +441,25 @@ const fetchWithFallback = async (path, options = {}) => {
     }
   }
   throw lastError || new Error('Could not connect to backend API')
+}
+
+const getAlternativeJobTitleSuggestion = async (rawTitle, lang) => {
+  const text = (rawTitle || '').trim()
+  if (!text) return ''
+  const normalizedCurrent = normalizeJobTitleForSearch(text).toLowerCase()
+  const local = getLocalJobSuggestions(text, lang, 8)
+  const localAlt = local.find((item) => item && item.toLowerCase() !== normalizedCurrent)
+  if (localAlt) return localAlt
+  try {
+    const response = await fetchWithFallback(`/jobs/suggestions?q=${encodeURIComponent(text)}`)
+    if (!response.ok) return ''
+    const data = await response.json()
+    const remote = Array.isArray(data.items) ? data.items : []
+    const remoteAlt = remote.find((item) => item && item.toLowerCase() !== normalizedCurrent)
+    return remoteAlt || ''
+  } catch {
+    return ''
+  }
 }
 
 const normalizeItems = (rawItems) => {
@@ -769,6 +791,7 @@ function JobsPage({ token, lang }) {
   })
   const [titleSuggestions, setTitleSuggestions] = useState([])
   const [titleCorrectionHint, setTitleCorrectionHint] = useState('')
+  const [alternativeTitleSuggestion, setAlternativeTitleSuggestion] = useState('')
   const [countryOptions, setCountryOptions] = useState([])
   const [cityOptions, setCityOptions] = useState([])
   const [cvFile, setCvFile] = useState(null)
@@ -923,6 +946,12 @@ function JobsPage({ token, lang }) {
 
       setJobs((prev) => (append ? [...prev, ...nextJobs] : nextJobs))
       if (!append && nextJobs.length === 0) {
+        const alternative = await getAlternativeJobTitleSuggestion(activeFilters.job_title, lang)
+        setAlternativeTitleSuggestion(alternative)
+      } else if (!append) {
+        setAlternativeTitleSuggestion('')
+      }
+      if (!append && nextJobs.length === 0) {
         setSearchMeta((prev) => ({
           ...prev,
           message: data.message || t('noFreshMatchingJobs'),
@@ -967,6 +996,17 @@ function JobsPage({ token, lang }) {
     }
     setFilters(broader)
     await runSearch({ append: false, overrideFilters: broader })
+  }
+
+  const applyAlternativeTitleSearch = async () => {
+    if (!alternativeTitleSuggestion) return
+    const nextFilters = {
+      ...filters,
+      job_title: alternativeTitleSuggestion,
+      search_text: alternativeTitleSuggestion,
+    }
+    setFilters(nextFilters)
+    await runSearch({ append: false, overrideFilters: nextFilters })
   }
 
   useEffect(() => {
@@ -1156,6 +1196,13 @@ function JobsPage({ token, lang }) {
           </button>
         </div>
       )}
+      {!loading && !error && jobs.length === 0 && alternativeTitleSuggestion && (
+        <div className="job-actions">
+          <button type="button" className="btn btn-secondary" onClick={applyAlternativeTitleSearch}>
+            {t('useAlternativeTitle')}: {alternativeTitleSuggestion}
+          </button>
+        </div>
+      )}
       <div className="jobs-list">
         {jobs.map((job) => (
           <article className="job-item" key={`${job.job_id || 'job'}-${job.external_id || job.id || job.title}`}>
@@ -1223,6 +1270,7 @@ function DashboardPage({ currentUser, token, onAuthInvalid, lang }) {
     apiKeys: false,
     message: '',
     providerWarning: '',
+    canBroaden: false,
     hasMore: false,
     total: 0,
     offset: 0,
@@ -1230,6 +1278,7 @@ function DashboardPage({ currentUser, token, onAuthInvalid, lang }) {
   })
   const [dashboardTitleSuggestions, setDashboardTitleSuggestions] = useState([])
   const [dashboardCorrectionHint, setDashboardCorrectionHint] = useState('')
+  const [dashboardAlternativeTitleSuggestion, setDashboardAlternativeTitleSuggestion] = useState('')
   const [authError, setAuthError] = useState('')
   const [countryOptions, setCountryOptions] = useState([])
   const [cityOptions, setCityOptions] = useState([])
@@ -1344,12 +1393,19 @@ function DashboardPage({ currentUser, token, onAuthInvalid, lang }) {
       }
 
       setMatches((prev) => (append ? [...prev, ...nextMatches] : nextMatches))
+      if (!append && nextMatches.length === 0) {
+        const alternative = await getAlternativeJobTitleSuggestion(activePreferences.job_title, lang)
+        setDashboardAlternativeTitleSuggestion(alternative)
+      } else if (!append) {
+        setDashboardAlternativeTitleSuggestion('')
+      }
       setMatchSearchMeta({
         fetched: data.fetched_jobs_count || 0,
         fallback: Boolean(data.used_fallback),
         apiKeys: Boolean(data.api_keys_configured),
         message: data.message || (nextMatches.length === 0 ? t('noFreshMatchingJobs') : ''),
         providerWarning: data.provider_warning || '',
+        canBroaden: Boolean(data.suggested_broaden_search),
         hasMore: Boolean(data.has_more),
         total: data.total_available || nextMatches.length,
         offset: data.offset || 0,
@@ -1489,6 +1545,30 @@ function DashboardPage({ currentUser, token, onAuthInvalid, lang }) {
     event.preventDefault()
     setPreferencesError('')
     await runDashboardSearch({ append: false, overridePreferences: preferences })
+  }
+
+  const runDashboardBroaderSearch = async () => {
+    const broader = {
+      ...preferences,
+      city: '',
+      radius_km: 100,
+      work_mode: '',
+      job_type: '',
+      experience_level: '',
+    }
+    setPreferences(broader)
+    await runDashboardSearch({ append: false, overridePreferences: broader })
+  }
+
+  const applyDashboardAlternativeTitleSearch = async () => {
+    if (!dashboardAlternativeTitleSuggestion) return
+    const nextPreferences = {
+      ...preferences,
+      job_title: dashboardAlternativeTitleSuggestion,
+      search_text: dashboardAlternativeTitleSuggestion,
+    }
+    setPreferences(nextPreferences)
+    await runDashboardSearch({ append: false, overridePreferences: nextPreferences })
   }
 
   return (
@@ -1694,6 +1774,20 @@ function DashboardPage({ currentUser, token, onAuthInvalid, lang }) {
               ? `${t('showingJobs')} ${matches.length} ${t('jobsCountSuffix')}`
               : (matchSearchMeta.message || t('noMatchingJobsBroader'))}
           </p>
+        )}
+        {!matchesError && !matchesLoading && matches.length === 0 && matchSearchMeta.canBroaden && (
+          <div className="job-actions">
+            <button type="button" className="btn btn-secondary" onClick={runDashboardBroaderSearch}>
+              {t('broadenSearch')}
+            </button>
+          </div>
+        )}
+        {!matchesError && !matchesLoading && matches.length === 0 && dashboardAlternativeTitleSuggestion && (
+          <div className="job-actions">
+            <button type="button" className="btn btn-secondary" onClick={applyDashboardAlternativeTitleSearch}>
+              {t('useAlternativeTitle')}: {dashboardAlternativeTitleSuggestion}
+            </button>
+          </div>
         )}
         <div className="matches-list">
           {matches.length === 0 && !matchesError && !matchSearchMeta.message && <p>{t('noMatches')}</p>}
