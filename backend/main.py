@@ -646,30 +646,233 @@ def _chatbot_reply(message: str, user: User | None = None) -> str:
     text = (message or "").strip()
     if not text:
         return "Please type a message."
+
+    def _detect_lang(input_text: str) -> str:
+        sample = (input_text or "").strip()
+        if re.search(r"[\u0600-\u06FF]", sample):
+            return "ar"
+        lowered = sample.lower()
+        romanized_ar_markers = [
+            "arabic",
+            "3arabi",
+            "arabi",
+            "ana",
+            "mish",
+            "mesh",
+            "shukran",
+            "afwan",
+            "mumkin",
+            "mumken",
+            "wazifa",
+            "wazifah",
+            "sira",
+            "seera",
+        ]
+        german_markers = [
+            "ich",
+            "und",
+            "der",
+            "die",
+            "das",
+            "für",
+            "arbeits",
+            "bewerbung",
+            "lebenslauf",
+            "stellen",
+            "hilfe",
+            "bitte",
+            "danke",
+            "interview",
+            "fragen",
+            "job",
+        ]
+        german_romanized_markers = [
+            "lebenslauf",
+            "bewerbung",
+            "stellenanzeige",
+            "arbeit",
+            "jobsuche",
+            "koennen",
+            "kannst du",
+            "bitte erklaeren",
+            "erklaeren",
+            "danke",
+        ]
+        if any(marker in lowered for marker in romanized_ar_markers):
+            return "ar"
+        if any(marker in lowered for marker in german_markers) or any(ch in sample for ch in "äöüß"):
+            return "de"
+        if any(marker in lowered for marker in german_romanized_markers):
+            return "de"
+        return "en"
+
+    def _pick(options: list[str], seed: str) -> str:
+        if not options:
+            return ""
+        idx = abs(hash(seed)) % len(options)
+        return options[idx]
+
+    def _detect_requested_reply_lang(lowered_text: str, default_lang: str) -> str:
+        wants_ar = any(k in lowered_text for k in [
+            "in arabic", "arabic", "بالعربي", "بالعربي", "arabisch", "auf arabisch", "translate to arabic", "explain in arabic",
+        ])
+        wants_de = any(k in lowered_text for k in [
+            "in german", "auf deutsch", "auf deutsch bitte", "deutsch", "translate to german", "explain in german",
+        ])
+        wants_en = any(k in lowered_text for k in [
+            "in english", "english please", "auf englisch", "translate to english", "explain in english", "بالانجليزي", "بالإنجليزي",
+        ])
+        if wants_ar:
+            return "ar"
+        if wants_de:
+            return "de"
+        if wants_en:
+            return "en"
+        return default_lang
+
+    def _intent(lowered_text: str) -> str:
+        if any(k in lowered_text for k in ["who are you", "what are you", "who r u", "من انت", "مين انت", "wer bist du"]):
+            return "intro"
+        if any(k in lowered_text for k in ["cv", "resume", "lebenslauf", "السيرة", "cv "]):
+            return "cv"
+        if any(k in lowered_text for k in ["interview", "fragen", "questions", "مقابلة", "مقابله", "اسئلة", "أسئلة"]):
+            return "interview"
+        if any(k in lowered_text for k in ["job", "jobs", "search", "find", "stellen", "arbeit", "وظيفة", "وظائف", "شغل"]):
+            return "jobs"
+        if any(k in lowered_text for k in [
+            "translate",
+            "translation",
+            "explain in",
+            "say this in",
+            "how to say",
+            "auf deutsch",
+            "auf englisch",
+            "auf arabisch",
+            "بالعربي",
+            "بالإنجليزي",
+            "بالالماني",
+            "بالألماني",
+            "ترجم",
+            "اشرح",
+        ]):
+            return "translate"
+        return "generic"
+
+    input_lang = _detect_lang(text)
     api_key = (os.getenv("OPENAI_API_KEY") or "").strip()
+    lower = text.lower()
+    lang = _detect_requested_reply_lang(lower, input_lang)
+    prefs = get_preferences(user) if user else {}
+    pref_title = (prefs.get("job_title") or "").strip()
+    pref_city = (prefs.get("city") or "").strip()
+    pref_country = (prefs.get("country") or "").strip()
+    intent = _intent(lower)
+
+    def _rule_based_reply() -> str:
+        focus_en = pref_title or "your target role"
+        place_en = pref_city or pref_country or "your preferred location"
+        focus_de = pref_title or "deine Zielrolle"
+        place_de = pref_city or pref_country or "deinem Wunschort"
+        focus_ar = pref_title or "المسمى المستهدف"
+        place_ar = pref_city or pref_country or "الموقع المفضل"
+        messages = {
+            "en": {
+                "intro": [
+                    "I am your Smart Job assistant. I can help with job search, CV tips, and interview prep.",
+                    "I am your job assistant. I can help you find roles, improve your CV, and prepare for interviews.",
+                ],
+                "cv": [
+                    "For stronger CV matches, add a clear Skills section and 3 measurable achievements in Experience.",
+                    "Keep your CV short and specific: skills first, then experience with measurable results.",
+                ],
+                "interview": [
+                    "Use STAR answers: Situation, Task, Action, Result. Prepare 3 short stories with outcomes.",
+                    "For interviews, practice concise STAR examples and include numbers when possible.",
+                ],
+                "jobs": [
+                    f"Let's search for {focus_en} in {place_en}. Use a broader title and radius if results are low.",
+                    f"We can target {focus_en} in {place_en}. If results are low, widen city/radius and simplify filters.",
+                    f"Quick plan: search {focus_en} in {place_en}, then expand radius and remove strict filters if needed.",
+                ],
+                "translate": [
+                    "Sure. Share the exact sentence, and I will explain it in Arabic, German, or English.",
+                    "Yes. Send the text and your target language, and I will give a short practical explanation.",
+                ],
+                "generic": [
+                    "I can help with jobs, CV improvement, and interview prep. Tell me your goal.",
+                    "Share your target role and city, and I will suggest a focused next step.",
+                ],
+            },
+            "de": {
+                "intro": [
+                    "Ich bin dein Smart-Job-Assistent. Ich helfe bei Jobsuche, Lebenslauf und Interviewvorbereitung.",
+                    "Ich bin dein Job-Assistent. Ich unterstütze dich bei Stellen, CV-Optimierung und Interviewtipps.",
+                ],
+                "cv": [
+                    "Für bessere Treffer: klare Skills-Sektion und 3 messbare Erfolge im Abschnitt Erfahrung.",
+                    "Halte den Lebenslauf kurz und konkret: zuerst Skills, dann Erfahrung mit messbaren Ergebnissen.",
+                ],
+                "interview": [
+                    "Nutze STAR-Antworten: Situation, Aufgabe, Aktion, Ergebnis. Übe 3 kurze Beispiele.",
+                    "Für Interviews: kurze STAR-Beispiele vorbereiten und wenn möglich Zahlen nennen.",
+                ],
+                "jobs": [
+                    f"Lass uns nach {focus_de} in {place_de} suchen. Bei wenigen Treffern Titel und Radius erweitern.",
+                    f"Wir suchen {focus_de} in {place_de}. Wenn wenig kommt, Stadt/Radius erweitern und Filter vereinfachen.",
+                    f"Kurzplan: {focus_de} in {place_de} suchen, dann Radius erweitern und strenge Filter lockern.",
+                ],
+                "translate": [
+                    "Gerne. Schick den genauen Satz, dann erkläre ich ihn auf Arabisch, Deutsch oder Englisch.",
+                    "Ja. Sende den Text und die Zielsprache, ich antworte kurz und praktisch.",
+                ],
+                "generic": [
+                    "Ich helfe bei Jobsuche, Lebenslauf und Interviewvorbereitung. Was ist dein Ziel?",
+                    "Nenne mir Rolle und Stadt, dann schlage ich den nächsten sinnvollen Schritt vor.",
+                ],
+            },
+            "ar": {
+                "intro": [
+                    "أنا مساعدك في منصة الوظائف الذكية. أساعدك في البحث عن وظيفة وتحسين السيرة والاستعداد للمقابلة.",
+                    "أنا مساعدك المهني. أقدر أساعدك في الوظائف، السيرة الذاتية، ونصائح المقابلات.",
+                ],
+                "cv": [
+                    "لتحسين المطابقة: أضف قسم مهارات واضح و3 إنجازات قابلة للقياس في الخبرة.",
+                    "خلّي السيرة مختصرة وواضحة: المهارات أولاً ثم خبرات مع نتائج رقمية.",
+                ],
+                "interview": [
+                    "استخدم طريقة STAR: الموقف، المهمة، الإجراء، النتيجة. حضّر 3 أمثلة قصيرة.",
+                    "للمقابلة: تدرب على أمثلة STAR مختصرة واذكر أرقامًا عند الإمكان.",
+                ],
+                "jobs": [
+                    f"خلّينا نبحث عن {focus_ar} في {place_ar}. إذا النتائج قليلة، وسّع المسمى ونطاق المسافة.",
+                    f"نقدر نستهدف {focus_ar} في {place_ar}. عند قلة النتائج، خفّف الفلاتر ووسّع المدينة/المسافة.",
+                    f"خطة سريعة: ابحث عن {focus_ar} في {place_ar} ثم وسّع المسافة وقلّل الفلاتر الصارمة.",
+                ],
+                "translate": [
+                    "أكيد. أرسل الجملة المطلوبة وحدد اللغة الهدف، وأشرحها لك بشكل مختصر.",
+                    "تمام. اكتب النص واللغة المطلوبة (عربي/ألماني/إنجليزي) وسأعطيك شرحًا عمليًا سريعًا.",
+                ],
+                "generic": [
+                    "أقدر أساعدك في الوظائف، تحسين السيرة، والاستعداد للمقابلات. ما هدفك الآن؟",
+                    "اكتب المسمى والمدينة، وسأعطيك خطوة عملية سريعة للبحث.",
+                ],
+            },
+        }
+        lang_messages = messages.get(lang, messages["en"])
+        choices = lang_messages.get(intent) or lang_messages["generic"]
+        return _pick(choices, f"{lang}:{intent}:{text}") or choices[0]
+
     if not api_key:
-        lower = text.lower()
-        prefs = get_preferences(user) if user else {}
-        pref_title = (prefs.get("job_title") or "").strip()
-        pref_city = (prefs.get("city") or "").strip()
-        pref_country = (prefs.get("country") or "").strip()
-        if any(k in lower for k in ["who are you", "what are you", "who r u"]):
-            return "I am your Smart Job assistant. I can help with job search, CV tips, and interview prep."
-        if any(k in lower for k in ["cv", "resume", "lebenslauf"]):
-            return "For stronger CV matches, add a clear Skills section and 3 measurable achievements in Experience."
-        if any(k in lower for k in ["interview", "fragen", "questions"]):
-            return "Start with STAR answers: Situation, Task, Action, Result. Practice 3 stories with measurable outcomes."
-        if any(k in lower for k in ["job", "jobs", "search", "find"]):
-            focus = pref_title or "your target role"
-            place = pref_city or pref_country or "your preferred location"
-            return f"Let's search for {focus} in {place}. Use a broader title and radius if results are low."
-        return "I can help you with jobs, CV improvement, and interview preparation. Ask me your goal."
+        return _rule_based_reply()
 
     model = (os.getenv("OPENAI_MODEL") or "gpt-4o-mini").strip()
     user_pref = get_preferences(user) if user else {}
     cv_hint = "yes" if user and (user.cv_text or "").strip() else "no"
     system_prompt = (
         "You are Smart Job Platform assistant. Be concise and practical. "
+        "Reply in the same language as the user's message (English, German, or Arabic). "
+        "If the user explicitly asks for another reply language, use the requested language. "
+        "Keep answers lightweight and job-focused. "
         "Help users with job search, CV improvement, interview prep, and platform actions."
     )
     user_prompt = (
@@ -699,10 +902,10 @@ def _chatbot_reply(message: str, user: User | None = None) -> str:
         with urlopen(req, timeout=25) as response:  # nosec B310
             data = json.loads(response.read().decode("utf-8"))
         content = (((data.get("choices") or [{}])[0].get("message") or {}).get("content") or "").strip()
-        return content or "I could not generate a response right now."
+        return content or _rule_based_reply()
     except Exception as exc:
         logger.warning("chatbot_failed error=%s", exc)
-        return "Chatbot is temporarily unavailable. Please try again."
+        return _rule_based_reply()
 
 
 def tokenize(text_value: str) -> set[str]:

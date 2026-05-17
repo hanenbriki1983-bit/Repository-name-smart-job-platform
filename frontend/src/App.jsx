@@ -125,6 +125,7 @@ const I18N = {
     everyDay: 'Every 1 day',
     nearbyCitiesHint: 'Nearby cities are included for this location.',
     allCountries: 'All countries',
+    chatbotGreeting: 'Hi! I am your Smart Job assistant. Ask me about jobs, CV, or interviews.',
   },
   de: {
     appTitle: 'Smart Job Plattform',
@@ -234,6 +235,7 @@ const I18N = {
     everyDay: 'Alle 1 Tag',
     nearbyCitiesHint: 'Nahegelegene Städte werden für diesen Ort einbezogen.',
     allCountries: 'Alle Länder',
+    chatbotGreeting: 'Hallo! Ich bin dein Smart-Job-Assistent. Frag mich zu Jobs, Lebenslauf oder Interviews.',
   },
   ar: {
     appTitle: 'منصة الوظائف الذكية',
@@ -343,6 +345,7 @@ const I18N = {
     everyDay: 'كل 1 يوم',
     nearbyCitiesHint: 'يتم تضمين المدن القريبة لهذا الموقع.',
     allCountries: 'كل الدول',
+    chatbotGreeting: 'مرحبًا! أنا مساعدك في منصة الوظائف الذكية. اسألني عن الوظائف أو السيرة الذاتية أو المقابلات.',
   },
 }
 
@@ -408,7 +411,6 @@ const getLocalJobSuggestions = (text, lang, limit = 8) => {
 
 const getJobLabel = (option, lang) => option?.labels?.[lang] || option?.labels?.en || option?.value || ''
 
-const FALLBACK_COUNTRIES = ['Germany']
 const FALLBACK_GERMANY_CITIES = [
   'Berlin',
   'Hamburg',
@@ -792,7 +794,6 @@ function JobsPage({ token, lang }) {
   const [titleSuggestions, setTitleSuggestions] = useState([])
   const [titleCorrectionHint, setTitleCorrectionHint] = useState('')
   const [alternativeTitleSuggestion, setAlternativeTitleSuggestion] = useState('')
-  const [countryOptions, setCountryOptions] = useState([])
   const [cityOptions, setCityOptions] = useState([])
   const [cvFile, setCvFile] = useState(null)
   const [uploadError, setUploadError] = useState('')
@@ -853,20 +854,6 @@ function JobsPage({ token, lang }) {
     } catch {
       setTitleSuggestions(localSuggestions)
       setTitleCorrectionHint('')
-    }
-  }
-
-  const loadCountryOptions = async () => {
-    try {
-      const response = await fetchWithFallback('/locations/countries')
-      if (!response.ok) {
-        setCountryOptions(FALLBACK_COUNTRIES)
-        return
-      }
-      const data = await response.json()
-      setCountryOptions(Array.isArray(data.items) && data.items.length > 0 ? data.items : FALLBACK_COUNTRIES)
-    } catch {
-      setCountryOptions(FALLBACK_COUNTRIES)
     }
   }
 
@@ -1010,9 +997,11 @@ function JobsPage({ token, lang }) {
   }
 
   useEffect(() => {
-    runSearch({ append: false })
-    loadCountryOptions()
-    loadCityOptions('Germany', '')
+    const timerId = setTimeout(() => {
+      runSearch({ append: false })
+      loadCityOptions('Germany', '')
+    }, 0)
+    return () => clearTimeout(timerId)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [token])
 
@@ -1239,9 +1228,10 @@ function JobsPage({ token, lang }) {
   )
 }
 
+// eslint-disable-next-line no-unused-vars
 function DashboardPage({ currentUser, token, onAuthInvalid, lang }) {
   const t = (key) => tFor(lang, key)
-  const [jobs, setJobs] = useState([])
+  const [, setJobs] = useState([])
   const [applications, setApplications] = useState([])
   const [verifiedUser, setVerifiedUser] = useState(currentUser)
   const [cvFile, setCvFile] = useState(null)
@@ -1280,7 +1270,6 @@ function DashboardPage({ currentUser, token, onAuthInvalid, lang }) {
   const [dashboardCorrectionHint, setDashboardCorrectionHint] = useState('')
   const [dashboardAlternativeTitleSuggestion, setDashboardAlternativeTitleSuggestion] = useState('')
   const [authError, setAuthError] = useState('')
-  const [countryOptions, setCountryOptions] = useState([])
   const [cityOptions, setCityOptions] = useState([])
   const dashboardNearbyCities = getNearbyCities(preferences.country, preferences.city)
 
@@ -1303,20 +1292,6 @@ function DashboardPage({ currentUser, token, onAuthInvalid, lang }) {
     } catch {
       setDashboardTitleSuggestions(localSuggestions)
       setDashboardCorrectionHint('')
-    }
-  }
-
-  const loadCountryOptions = async () => {
-    try {
-      const response = await fetchWithFallback('/locations/countries')
-      if (!response.ok) {
-        setCountryOptions(FALLBACK_COUNTRIES)
-        return
-      }
-      const data = await response.json()
-      setCountryOptions(Array.isArray(data.items) && data.items.length > 0 ? data.items : FALLBACK_COUNTRIES)
-    } catch {
-      setCountryOptions(FALLBACK_COUNTRIES)
     }
   }
 
@@ -1448,7 +1423,6 @@ function DashboardPage({ currentUser, token, onAuthInvalid, lang }) {
           job_type: data.preferences?.job_type || '',
           experience_level: data.preferences?.experience_level || '',
         })
-        loadCountryOptions()
         loadCityOptions('Germany', data.preferences?.city || '')
       } catch (err) {
         setAuthError(err.message)
@@ -1491,7 +1465,10 @@ function DashboardPage({ currentUser, token, onAuthInvalid, lang }) {
   }, [token])
 
   useEffect(() => {
-    runDashboardSearch({ append: false })
+    const timerId = setTimeout(() => {
+      runDashboardSearch({ append: false })
+    }, 0)
+    return () => clearTimeout(timerId)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [token])
 
@@ -1836,7 +1813,7 @@ function DashboardPage({ currentUser, token, onAuthInvalid, lang }) {
 function ChatbotPage({ token, lang }) {
   const t = (key) => tFor(lang, key)
   const [messages, setMessages] = useState([
-    { role: 'assistant', content: 'Hi! I am your Smart Job assistant. Ask me about jobs, CV, or interviews.' },
+    { role: 'assistant', content: tFor(lang, 'chatbotGreeting') },
   ])
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(false)
@@ -1896,6 +1873,7 @@ function ChatbotPage({ token, lang }) {
   )
 }
 
+// eslint-disable-next-line no-unused-vars
 function ProtectedRoute({ isAuthenticated, children }) {
   if (!isAuthenticated) {
     return <Navigate to="/login" replace />
@@ -1906,6 +1884,7 @@ function ProtectedRoute({ isAuthenticated, children }) {
 function App() {
   const [lang, setLang] = useState(() => localStorage.getItem('ui_lang') || 'en')
   const [token, setToken] = useState(() => localStorage.getItem('auth_token') || '')
+  // eslint-disable-next-line no-unused-vars
   const [currentUser, setCurrentUser] = useState(() => {
     const raw = localStorage.getItem('auth_user')
     return raw ? JSON.parse(raw) : null
@@ -1947,6 +1926,7 @@ function App() {
     localStorage.removeItem('auth_user')
   }
 
+  // eslint-disable-next-line no-unused-vars
   const handleAuthInvalid = () => {
     handleLogout()
   }
