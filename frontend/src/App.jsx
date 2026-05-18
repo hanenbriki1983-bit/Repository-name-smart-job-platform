@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { BrowserRouter, Link, NavLink, Navigate, Route, Routes, useLocation, useNavigate, useSearchParams } from 'react-router-dom'
 import './App.css'
 import heroImage from './assets/hero.png'
@@ -2021,6 +2021,7 @@ function ChatbotPage({ token, lang, compact = false }) {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [listening, setListening] = useState(false)
+  const [micStatus, setMicStatus] = useState('')
   const [cvFile, setCvFile] = useState(null)
   const [cvText, setCvText] = useState('')
   const [cvSummary, setCvSummary] = useState('')
@@ -2028,6 +2029,20 @@ function ChatbotPage({ token, lang, compact = false }) {
   const [improvedCvText, setImprovedCvText] = useState('')
   const [cvBusy, setCvBusy] = useState(false)
   const [cvStatus, setCvStatus] = useState('')
+  const recognitionRef = useRef(null)
+  const keepListeningRef = useRef(false)
+  const receivedSpeechRef = useRef(false)
+
+  useEffect(() => () => {
+    keepListeningRef.current = false
+    if (recognitionRef.current) {
+      try {
+        recognitionRef.current.stop()
+      } catch {
+        // noop
+      }
+    }
+  }, [])
 
   useEffect(() => {
     const loadCvGreeting = async () => {
@@ -2080,27 +2095,101 @@ function ChatbotPage({ token, lang, compact = false }) {
     }
   }
 
-  const startVoiceInput = () => {
+  const stopVoiceInput = () => {
+    keepListeningRef.current = false
+    if (recognitionRef.current) {
+      try {
+        recognitionRef.current.stop()
+      } catch {
+        // noop
+      }
+    }
+    setListening(false)
+    setMicStatus('')
+  }
+
+  const startVoiceInput = async () => {
     if (typeof window === 'undefined') return
     const SR = window.SpeechRecognition || window.webkitSpeechRecognition
     if (!SR) {
-      setError('Speech recognition is not available in this browser.')
+      setMicStatus('Speech recognition is not available in this browser.')
       return
     }
+    if (listening) {
+      stopVoiceInput()
+      return
+    }
+
+    try {
+      if (navigator?.mediaDevices?.getUserMedia) {
+        await navigator.mediaDevices.getUserMedia({ audio: true })
+      }
+    } catch {
+      setMicStatus('Microphone permission denied')
+      return
+    }
+
     const recog = new SR()
-    // Browser support for full auto-detect varies; this keeps multilingual usage practical.
+    recognitionRef.current = recog
+    keepListeningRef.current = true
+    receivedSpeechRef.current = false
     recog.lang = lang === 'de' ? 'de-DE' : lang === 'ar' ? 'ar-SA' : 'en-US'
-    recog.continuous = false
-    recog.interimResults = false
-    setListening(true)
+    recog.continuous = true
+    recog.interimResults = true
+
+    recog.onstart = () => {
+      setListening(true)
+      setMicStatus('Listening...')
+    }
     recog.onresult = (evt) => {
-      const transcript = evt?.results?.[0]?.[0]?.transcript || ''
-      setInput((prev) => `${prev} ${transcript}`.trim())
+      let finalText = ''
+      for (let i = evt.resultIndex; i < evt.results.length; i += 1) {
+        const item = evt.results[i]
+        const text = item?.[0]?.transcript || ''
+        if (item?.isFinal) finalText += `${text} `
+      }
+      if (finalText.trim()) {
+        receivedSpeechRef.current = true
+        setInput((prev) => `${prev} ${finalText}`.trim())
+        setMicStatus('Speech captured')
+        keepListeningRef.current = false
+        try {
+          recog.stop()
+        } catch {
+          // noop
+        }
+      }
+    }
+    recog.onerror = (evt) => {
+      const code = evt?.error || ''
+      if (code === 'not-allowed' || code === 'service-not-allowed') {
+        setMicStatus('Microphone permission denied')
+      } else if (code === 'no-speech') {
+        setMicStatus('No speech detected')
+      } else {
+        setMicStatus('Speech recognition error')
+      }
+    }
+    recog.onend = () => {
+      if (keepListeningRef.current && !receivedSpeechRef.current) {
+        setMicStatus('Listening...')
+        try {
+          recog.start()
+          return
+        } catch {
+          // fallback to stopped state
+        }
+      } else if (!receivedSpeechRef.current && keepListeningRef.current === false) {
+        setMicStatus('No speech detected')
+      }
       setListening(false)
     }
-    recog.onerror = () => setListening(false)
-    recog.onend = () => setListening(false)
-    recog.start()
+    try {
+      recog.start()
+    } catch {
+      setListening(false)
+      setMicStatus('Could not start microphone')
+    }
   }
 
   const analyzeCvInChatbot = async (event) => {
@@ -2201,6 +2290,7 @@ function ChatbotPage({ token, lang, compact = false }) {
     <section className={`card chatbot ${compact ? 'compact' : ''}`}>
       <h2>{t('chatbot')}</h2>
       {error && <p className="error">{error}</p>}
+      {micStatus && <p className={micStatus.toLowerCase().includes('denied') ? 'error' : 'success'}>{micStatus}</p>}
       <div className="chat-stream">
         {messages.map((message, idx) => (
           <div key={`chat-msg-${idx}`} className={`bubble ${message.role === 'user' ? 'user' : 'bot'}`}>
@@ -2252,8 +2342,8 @@ function ChatbotPage({ token, lang, compact = false }) {
           type="button"
           className={`icon-btn mic-btn ${listening ? 'active' : ''}`}
           onClick={startVoiceInput}
-          aria-label="Speak"
-          title="Speak"
+          aria-label={listening ? 'Stop listening' : 'Speak'}
+          title={listening ? 'Stop listening' : 'Speak'}
         >
           <span aria-hidden="true">🎤</span>
         </button>

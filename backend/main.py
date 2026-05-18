@@ -902,15 +902,27 @@ def _chatbot_reply(message: str, user: User | None = None, db: Session | None = 
         return options[idx]
 
     def _detect_requested_reply_lang(lowered_text: str, default_lang: str) -> str:
-        wants_ar = any(k in lowered_text for k in [
-            "in arabic", "arabic", "speak in arabic", "reply in arabic", "بالعربي", "بالعربي", "arabisch", "auf arabisch", "translate to arabic", "explain in arabic",
-        ])
-        wants_de = any(k in lowered_text for k in [
-            "in german", "speak in german", "reply in german", "auf deutsch", "auf deutsch bitte", "deutsch", "translate to german", "explain in german",
-        ])
-        wants_en = any(k in lowered_text for k in [
-            "in english", "speak in english", "reply in english", "english please", "auf englisch", "translate to english", "explain in english", "بالانجليزي", "بالإنجليزي",
-        ])
+        wants_ar = bool(
+            re.search(
+                r"\b(in|speak in|reply in|translate to|explain in)\s+arabic\b|"
+                r"\barabic\b|auf arabisch|arabisch|بالعربي|بالعربية",
+                lowered_text,
+            )
+        )
+        wants_de = bool(
+            re.search(
+                r"\b(in|speak in|reply in|translate to|explain in)\s+german\b|"
+                r"\bgerman\b|auf deutsch|deutsch",
+                lowered_text,
+            )
+        )
+        wants_en = bool(
+            re.search(
+                r"\b(in|speak in|reply in|translate to|explain in)\s+english\b|"
+                r"\benglish\b|auf englisch|بالانجليزي|بالإنجليزي",
+                lowered_text,
+            )
+        )
         if wants_ar:
             return "ar"
         if wants_de:
@@ -920,6 +932,10 @@ def _chatbot_reply(message: str, user: User | None = None, db: Session | None = 
         return default_lang
 
     def _is_career_plan_request(lowered_text: str) -> bool:
+        if "plan" in lowered_text and any(k in lowered_text for k in ["job", "jobs", "career", "role", "skills"]):
+            return True
+        if any(k in lowered_text for k in ["make me a plan", "make a plan for me", "build me a plan"]):
+            return True
         if any(k in lowered_text for k in [
             "career plan", "skills do i need", "how can i become", "roadmap",
             "karriereplan", "welche skills", "wie werde ich",
@@ -927,7 +943,12 @@ def _chatbot_reply(message: str, user: User | None = None, db: Session | None = 
         ]):
             return True
         return bool(
-            re.search(r"\b(30\s*/\s*60\s*/\s*90|30-60-90|30 60 90|90[-\s‑]?day|90[-\s‑]?tage|90[-\s‑]?يوم)\b", lowered_text)
+            re.search(
+                r"\b(30\s*/\s*60\s*/\s*90|30-60-90|30 60 90|"
+                r"(30|60|90)[-\s‑]?(day|days|tage|tagen|يوم)|"
+                r"(30|60|90)[-\s‑]?day[-\s‑]?plan)\b",
+                lowered_text,
+            )
         )
 
     def _intent(lowered_text: str) -> str:
@@ -968,11 +989,16 @@ def _chatbot_reply(message: str, user: User | None = None, db: Session | None = 
     api_key = (os.getenv("OPENAI_API_KEY") or "").strip()
     lower = text.lower()
     requested_lang = _detect_requested_reply_lang(lower, "")
-    user_key = f"user:{user.id}" if user else "anon"
-    if requested_lang in {"en", "de", "ar"}:
+    user_key = f"user:{user.id}" if user else None
+    if user_key and requested_lang in {"en", "de", "ar"}:
         _CHAT_LANG_PREFS[user_key] = requested_lang
-    sticky_lang = _CHAT_LANG_PREFS.get(user_key)
+    sticky_lang = _CHAT_LANG_PREFS.get(user_key) if user_key else None
     lang = sticky_lang or (requested_lang if requested_lang in {"en", "de", "ar"} else input_lang)
+    # Natural override: when user writes clearly in English or Arabic, follow that language directly.
+    # Explicit "speak/reply in X" still remains sticky via requested_lang above.
+    if requested_lang not in {"en", "de", "ar"}:
+        if input_lang in {"en", "ar"} and sticky_lang and sticky_lang != input_lang:
+            lang = input_lang
     prefs = get_preferences(user) if user else {}
     pref_title = (prefs.get("job_title") or "").strip()
     pref_city = (prefs.get("city") or "").strip()
@@ -980,10 +1006,23 @@ def _chatbot_reply(message: str, user: User | None = None, db: Session | None = 
     cv_name = (user.cv_candidate_name or user.name or "").strip() if user else ""
     cv_skills = [item.strip() for item in (user.cv_skills_csv or "").split(",") if item.strip()] if user else []
     cv_keywords = [item.strip() for item in (user.cv_preferred_keywords_csv or "").split(",") if item.strip()] if user else []
-    intent = "career_plan" if _is_career_plan_request(lower) else _intent(lower)
+    career_intent = _is_career_plan_request(lower)
+    if career_intent and requested_lang not in {"en", "de", "ar"} and input_lang in {"en", "ar"}:
+        lang = input_lang
+    intent = "career_plan" if career_intent else _intent(lower)
+    logger.info(
+        "chatbot_route intent=%s career_intent=%s input_lang=%s requested_lang=%s selected_lang=%s user_id=%s text=%s",
+        intent,
+        career_intent,
+        input_lang,
+        requested_lang,
+        lang,
+        user.id if user else None,
+        text[:180],
+    )
     role_match = re.search(r"(as|als|als eine|als ein|wie)\s+([a-zA-Z\u0600-\u06FF\s\-]{3,40})", text, flags=re.IGNORECASE)
     role_from_text = (role_match.group(2).strip() if role_match else "")
-    role_need_match = re.search(r"(for|für|fur|in)\s+([a-zA-Z\u0600-\u06FFäöüÄÖÜß\s\-]{3,50})\s+jobs?", text, flags=re.IGNORECASE)
+    role_need_match = re.search(r"(for|für|fur|in)\s+([a-zA-Z\u0600-\u06FFäöüÄÖÜß\s\-]{2,50})\s+jobs?", text, flags=re.IGNORECASE)
     role_need_from_text = (role_need_match.group(2).strip() if role_need_match else "")
     become_match = re.search(r"(become|werde ich|wie werde ich|اصبح|أصبح)\s+([a-zA-Z\u0600-\u06FFäöüÄÖÜß\s\-]{3,50})", text, flags=re.IGNORECASE)
     become_role = (become_match.group(2).strip() if become_match else "")
@@ -993,12 +1032,23 @@ def _chatbot_reply(message: str, user: User | None = None, db: Session | None = 
     inferred_city = city_from_text or pref_city or pref_country or "preferred location"
 
     if intent == "career_plan":
+        # Natural English career prompts should not be stuck in previous German preference.
+        if requested_lang not in {"en", "de", "ar"}:
+            if re.search(r"\b(make|plan|career|skills|jobs|role|how can i)\b", lower):
+                lang = "en"
         cv_base = (user.cv_text or "").strip() if user else ""
         if len(cv_base) < 20:
             cv_base = (
                 f"Target role: {inferred_role}. Preferred location: {inferred_city}. "
                 f"Known skills: {', '.join(cv_skills[:10]) if cv_skills else 'not specified'}."
             )
+        logger.info(
+            "chatbot_route path=career_plan role=%s city=%s lang=%s has_cv=%s",
+            inferred_role,
+            inferred_city,
+            lang,
+            bool((user.cv_text or "").strip()) if user else False,
+        )
         plan = _build_career_plan(cv_base, inferred_role, inferred_city, language=lang)
         if lang == "de":
             return (
@@ -1127,6 +1177,7 @@ def _chatbot_reply(message: str, user: User | None = None, db: Session | None = 
                 ],
             },
         }
+        logger.info("chatbot_route path=rule_based intent=%s lang=%s", intent, lang)
         lang_messages = messages.get(lang, messages["en"])
         choices = lang_messages.get(intent) or lang_messages["generic"]
         return _pick(choices, f"{lang}:{intent}:{text}") or choices[0]
