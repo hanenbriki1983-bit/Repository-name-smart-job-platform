@@ -228,8 +228,26 @@ main {
 
 .chat-input {
   display: grid;
-  grid-template-columns: 1fr auto;
+  grid-template-columns: 1fr auto auto;
   gap: 10px;
+  align-items: center;
+}
+
+.icon-btn {
+  border: 1px solid #d0dce9;
+  background: #fff;
+  color: #1f3b56;
+  border-radius: 999px;
+  width: 40px;
+  height: 40px;
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+}
+
+.mic-btn.active {
+  background: #e9f3ff;
+  border-color: #8fb9e7;
 }
 
 .chat-float-wrap {

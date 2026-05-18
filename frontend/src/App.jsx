@@ -1891,9 +1891,7 @@ function ChatbotPage({ token, lang, compact = false }) {
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
-  const [voiceEnabled, setVoiceEnabled] = useState(false)
   const [listening, setListening] = useState(false)
-  const [speakReplies, setSpeakReplies] = useState(false)
   const [cvFile, setCvFile] = useState(null)
   const [cvText, setCvText] = useState('')
   const [cvSummary, setCvSummary] = useState('')
@@ -1946,12 +1944,6 @@ function ChatbotPage({ token, lang, compact = false }) {
       }
       const replyText = data.reply || 'No response.'
       setMessages((prev) => [...prev, { role: 'assistant', content: replyText }])
-      if (speakReplies && typeof window !== 'undefined' && window.speechSynthesis) {
-        const utterance = new SpeechSynthesisUtterance(replyText)
-        utterance.lang = lang === 'de' ? 'de-DE' : lang === 'ar' ? 'ar-SA' : 'en-US'
-        window.speechSynthesis.cancel()
-        window.speechSynthesis.speak(utterance)
-      }
     } catch (err) {
       setError(err.message || 'Chatbot failed')
     } finally {
@@ -2080,21 +2072,6 @@ function ChatbotPage({ token, lang, compact = false }) {
     <section className={`card chatbot ${compact ? 'compact' : ''}`}>
       <h2>{t('chatbot')}</h2>
       {error && <p className="error">{error}</p>}
-      <div className="actions">
-        <button type="button" className="btn btn-secondary" onClick={() => setVoiceEnabled((v) => !v)}>
-          {voiceEnabled ? 'Voice: On' : 'Voice: Off'}
-        </button>
-        {voiceEnabled && (
-          <>
-            <button type="button" className="btn btn-secondary" onClick={startVoiceInput} disabled={listening}>
-              {listening ? 'Listening...' : 'Speak'}
-            </button>
-            <button type="button" className="btn btn-secondary" onClick={() => setSpeakReplies((v) => !v)}>
-              {speakReplies ? 'Read replies: On' : 'Read replies: Off'}
-            </button>
-          </>
-        )}
-      </div>
       <div className="chat-stream">
         {messages.map((message, idx) => (
           <div key={`chat-msg-${idx}`} className={`bubble ${message.role === 'user' ? 'user' : 'bot'}`}>
@@ -2138,10 +2115,19 @@ function ChatbotPage({ token, lang, compact = false }) {
       <form className="chat-input" onSubmit={sendMessage}>
         <input
           type="text"
-          placeholder="Ask anything..."
+          placeholder={listening ? 'Listening...' : 'Ask anything...'}
           value={input}
           onChange={(e) => setInput(e.target.value)}
         />
+        <button
+          type="button"
+          className={`icon-btn mic-btn ${listening ? 'active' : ''}`}
+          onClick={startVoiceInput}
+          aria-label="Speak"
+          title="Speak"
+        >
+          <span aria-hidden="true">🎤</span>
+        </button>
         <button type="submit" className="btn" disabled={loading}>
           {loading ? t('searching') : t('search')}
         </button>
