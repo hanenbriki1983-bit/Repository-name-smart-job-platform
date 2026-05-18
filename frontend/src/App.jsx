@@ -1262,7 +1262,7 @@ function JobsPage({ token, lang }) {
           </div>
         </details>
         <button type="submit" className="btn" disabled={loading}>
-          {loading ? t('searching') : t('search')}
+          {loading ? 'Sending...' : 'Send'}
         </button>
       </form>
       )}
@@ -2022,6 +2022,7 @@ function ChatbotPage({ token, lang, compact = false }) {
   const [error, setError] = useState('')
   const [listening, setListening] = useState(false)
   const [micStatus, setMicStatus] = useState('')
+  const [interimTranscript, setInterimTranscript] = useState('')
   const [cvFile, setCvFile] = useState(null)
   const [cvText, setCvText] = useState('')
   const [cvSummary, setCvSummary] = useState('')
@@ -2032,6 +2033,8 @@ function ChatbotPage({ token, lang, compact = false }) {
   const recognitionRef = useRef(null)
   const keepListeningRef = useRef(false)
   const receivedSpeechRef = useRef(false)
+  const finalSpeechBufferRef = useRef('')
+  const finalizeTimerRef = useRef(null)
 
   useEffect(() => () => {
     keepListeningRef.current = false
@@ -2041,6 +2044,10 @@ function ChatbotPage({ token, lang, compact = false }) {
       } catch {
         // noop
       }
+    }
+    if (finalizeTimerRef.current) {
+      clearTimeout(finalizeTimerRef.current)
+      finalizeTimerRef.current = null
     }
   }, [])
 
@@ -2106,6 +2113,12 @@ function ChatbotPage({ token, lang, compact = false }) {
     }
     setListening(false)
     setMicStatus('')
+    setInterimTranscript('')
+    finalSpeechBufferRef.current = ''
+    if (finalizeTimerRef.current) {
+      clearTimeout(finalizeTimerRef.current)
+      finalizeTimerRef.current = null
+    }
   }
 
   const startVoiceInput = async () => {
@@ -2133,6 +2146,8 @@ function ChatbotPage({ token, lang, compact = false }) {
     recognitionRef.current = recog
     keepListeningRef.current = true
     receivedSpeechRef.current = false
+    finalSpeechBufferRef.current = ''
+    setInterimTranscript('')
     recog.lang = lang === 'de' ? 'de-DE' : lang === 'ar' ? 'ar-SA' : 'en-US'
     recog.continuous = true
     recog.interimResults = true
@@ -2143,22 +2158,38 @@ function ChatbotPage({ token, lang, compact = false }) {
     }
     recog.onresult = (evt) => {
       let finalText = ''
+      let interimText = ''
       for (let i = evt.resultIndex; i < evt.results.length; i += 1) {
         const item = evt.results[i]
-        const text = item?.[0]?.transcript || ''
+        const text = (item?.[0]?.transcript || '').trim()
+        if (!text) continue
         if (item?.isFinal) finalText += `${text} `
+        else interimText += `${text} `
       }
+      setInterimTranscript(interimText.trim())
       if (finalText.trim()) {
         receivedSpeechRef.current = true
-        setInput((prev) => `${prev} ${finalText}`.trim())
-        setMicStatus('Speech captured')
-        keepListeningRef.current = false
-        try {
-          recog.stop()
-        } catch {
-          // noop
-        }
+        finalSpeechBufferRef.current = `${finalSpeechBufferRef.current} ${finalText}`.trim()
       }
+      if (finalizeTimerRef.current) {
+        clearTimeout(finalizeTimerRef.current)
+      }
+      finalizeTimerRef.current = setTimeout(() => {
+        const combined = finalSpeechBufferRef.current.trim()
+        if (combined) {
+          setInput((prev) => `${prev} ${combined}`.replace(/\s+/g, ' ').trim())
+          finalSpeechBufferRef.current = ''
+          keepListeningRef.current = false
+          setListening(false)
+          setMicStatus('')
+          setInterimTranscript('')
+          try {
+            recog.stop()
+          } catch {
+            // noop
+          }
+        }
+      }, 700)
     }
     recog.onerror = (evt) => {
       const code = evt?.error || ''
@@ -2169,8 +2200,25 @@ function ChatbotPage({ token, lang, compact = false }) {
       } else {
         setMicStatus('Speech recognition error')
       }
+      if (finalizeTimerRef.current) {
+        clearTimeout(finalizeTimerRef.current)
+        finalizeTimerRef.current = null
+      }
     }
     recog.onend = () => {
+      if (finalizeTimerRef.current) {
+        clearTimeout(finalizeTimerRef.current)
+        finalizeTimerRef.current = null
+      }
+      const combined = finalSpeechBufferRef.current.trim()
+      if (combined) {
+        setInput((prev) => `${prev} ${combined}`.replace(/\s+/g, ' ').trim())
+        finalSpeechBufferRef.current = ''
+        setInterimTranscript('')
+        setListening(false)
+        setMicStatus('')
+        return
+      }
       if (keepListeningRef.current && !receivedSpeechRef.current) {
         setMicStatus('Listening...')
         try {
@@ -2181,6 +2229,8 @@ function ChatbotPage({ token, lang, compact = false }) {
         }
       } else if (!receivedSpeechRef.current && keepListeningRef.current === false) {
         setMicStatus('No speech detected')
+      } else {
+        setMicStatus('')
       }
       setListening(false)
     }
@@ -2290,7 +2340,6 @@ function ChatbotPage({ token, lang, compact = false }) {
     <section className={`card chatbot ${compact ? 'compact' : ''}`}>
       <h2>{t('chatbot')}</h2>
       {error && <p className="error">{error}</p>}
-      {micStatus && <p className={micStatus.toLowerCase().includes('denied') ? 'error' : 'success'}>{micStatus}</p>}
       <div className="chat-stream">
         {messages.map((message, idx) => (
           <div key={`chat-msg-${idx}`} className={`bubble ${message.role === 'user' ? 'user' : 'bot'}`}>
@@ -2334,7 +2383,7 @@ function ChatbotPage({ token, lang, compact = false }) {
       <form className="chat-input" onSubmit={sendMessage}>
         <input
           type="text"
-          placeholder={listening ? 'Listening...' : 'Ask anything...'}
+          placeholder="Ask anything..."
           value={input}
           onChange={(e) => setInput(e.target.value)}
         />
@@ -2348,9 +2397,11 @@ function ChatbotPage({ token, lang, compact = false }) {
           <span aria-hidden="true">🎤</span>
         </button>
         <button type="submit" className="btn" disabled={loading}>
-          {loading ? t('searching') : t('search')}
+          {loading ? 'Sending...' : 'Send'}
         </button>
       </form>
+      {listening && interimTranscript && <p className="muted">… {interimTranscript}</p>}
+      {micStatus && <p className={micStatus.toLowerCase().includes('denied') ? 'error' : 'success'}>{micStatus}</p>}
     </section>
   )
 }

@@ -932,11 +932,13 @@ def _chatbot_reply(message: str, user: User | None = None, db: Session | None = 
         return default_lang
 
     def _is_career_plan_request(lowered_text: str) -> bool:
-        if "plan" in lowered_text and any(k in lowered_text for k in ["job", "jobs", "career", "role", "skills"]):
+        compact = re.sub(r"[^a-z0-9\u0600-\u06ff\s]", " ", lowered_text)
+        compact = re.sub(r"\s+", " ", compact).strip()
+        if "plan" in compact and any(k in compact for k in ["job", "jobs", "career", "role", "skills", "germany", "deutschland", "it"]):
             return True
-        if any(k in lowered_text for k in ["make me a plan", "make a plan for me", "build me a plan"]):
+        if any(k in compact for k in ["make me a plan", "make a plan for me", "build me a plan", "make me", "can you make me"]):
             return True
-        if any(k in lowered_text for k in [
+        if any(k in compact for k in [
             "career plan", "skills do i need", "how can i become", "roadmap",
             "karriereplan", "welche skills", "wie werde ich",
             "خطة مهنية", "ما المهارات", "كيف أصبح",
@@ -947,7 +949,7 @@ def _chatbot_reply(message: str, user: User | None = None, db: Session | None = 
                 r"\b(30\s*/\s*60\s*/\s*90|30-60-90|30 60 90|"
                 r"(30|60|90)[-\s‑]?(day|days|tage|tagen|يوم)|"
                 r"(30|60|90)[-\s‑]?day[-\s‑]?plan)\b",
-                lowered_text,
+                compact,
             )
         )
 
