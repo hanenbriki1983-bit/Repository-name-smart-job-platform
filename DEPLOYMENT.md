@@ -1,12 +1,18 @@
 # Deployment Guide
 
-## Backend on Render
+## Full Stack on Render (Recommended)
 
 1. Push repo to GitHub.
-2. In Render, create PostgreSQL service.
-3. Create Web Service from repo using [render.yaml](C:/Users/ASUS/smart-job-platform/render.yaml).
-4. Set `CORS_ORIGINS` to your Vercel domain.
-5. Render runs:
+2. In Render, create a new Blueprint and select the repo.
+3. Render will provision all services from [render.yaml](C:/Users/ASUS/smart-job-platform/render.yaml):
+   - `smart-job-frontend` (Static Site)
+   - `smart-job-backend` (Web Service)
+   - `smart-job-db` (PostgreSQL)
+4. In Render dashboard, update backend env var `CORS_ORIGINS` to your actual frontend URL:
+   - `https://smart-job-frontend.onrender.com` (or your custom domain)
+5. Set frontend env var `VITE_API_URL` to your backend URL:
+   - `https://smart-job-backend.onrender.com`
+6. Backend start command:
 
 ```bash
 alembic upgrade head && uvicorn main:app --host 0.0.0.0 --port $PORT
@@ -21,13 +27,19 @@ alembic upgrade head && uvicorn main:app --host 0.0.0.0 --port $PORT
    - `CORS_ORIGINS` (your Vercel URL)
 4. Railway uses [railway.toml](C:/Users/ASUS/smart-job-platform/railway.toml).
 
-## Frontend on Vercel
+## Frontend on Render (Manual Static Site Option)
 
-1. Import the same repo into Vercel.
-2. Use [vercel.json](C:/Users/ASUS/smart-job-platform/vercel.json).
-3. Set env var:
+If you do not use Blueprint:
+1. Create a **Static Site** in Render.
+2. Configure:
+   - Root Directory: `frontend`
+   - Build Command: `npm ci && npm run build`
+   - Publish Directory: `dist`
+3. Add rewrite rule for SPA:
+   - Source: `/*`
+   - Destination: `/index.html`
+4. Set env var:
    - `VITE_API_URL=https://your-backend-domain`
-4. Deploy.
 
 ## PWA Installability
 
@@ -44,5 +56,5 @@ docker compose up --build -d
 ## Health Checks
 
 - Backend: `GET /` at `https://your-backend-domain/`
-- Frontend: open your Vercel URL
+- Frontend: open your Render frontend URL
 - Swagger: `https://your-backend-domain/docs`

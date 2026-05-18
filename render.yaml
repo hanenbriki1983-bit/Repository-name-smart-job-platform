@@ -1,4 +1,17 @@
 services:
+  - type: static
+    name: smart-job-frontend
+    rootDir: frontend
+    buildCommand: npm ci && npm run build
+    staticPublishPath: dist
+    envVars:
+      - key: VITE_API_URL
+        value: https://smart-job-backend.onrender.com
+    routes:
+      - type: rewrite
+        source: /*
+        destination: /index.html
+
   - type: web
     name: smart-job-backend
     runtime: python
@@ -11,7 +24,7 @@ services:
           name: smart-job-db
           property: connectionString
       - key: CORS_ORIGINS
-        value: https://your-frontend.vercel.app
+        value: https://smart-job-frontend.onrender.com
 
   - type: pserv
     name: smart-job-db

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { BrowserRouter, Link, NavLink, Navigate, Route, Routes, useNavigate } from 'react-router-dom'
+import { BrowserRouter, Link, NavLink, Navigate, Route, Routes, useLocation, useNavigate, useSearchParams } from 'react-router-dom'
 import './App.css'
 import heroImage from './assets/hero.png'
 
@@ -495,6 +495,15 @@ const formatPostedAgeLabel = (job) => {
   return `Posted ${weeks} weeks ago`
 }
 
+const buildOsmEmbedUrl = (lat, lon) => {
+  const d = 0.08
+  const left = lon - d
+  const right = lon + d
+  const top = lat + d
+  const bottom = lat - d
+  return `https://www.openstreetmap.org/export/embed.html?bbox=${left}%2C${bottom}%2C${right}%2C${top}&layer=mapnik&marker=${lat}%2C${lon}`
+}
+
 const GERMANY_NEARBY_CITIES = {
   dusseldorf: ['heiligenhaus', 'velbert', 'wuppertal', 'ratingen', 'neuss', 'duisburg'],
   'düsseldorf': ['heiligenhaus', 'velbert', 'wuppertal', 'ratingen', 'neuss', 'duisburg'],
@@ -568,6 +577,14 @@ const getShortReason = (job) => {
   return 'General match based on your profile.'
 }
 
+const renderCompanyLogo = (job) => {
+  const initials = (job?.company_initials || (job?.company || 'CO').split(/\s+/).slice(0, 2).map((part) => part[0]).join('').toUpperCase() || 'CO')
+  if (job?.company_logo_url) {
+    return <img className="job-logo" src={job.company_logo_url} alt={`${job.company || 'Company'} logo`} loading="lazy" />
+  }
+  return <div className="job-logo placeholder" aria-label={`${job?.company || 'Company'} initials`}>{initials}</div>
+}
+
 function Layout({ children, isAuthenticated, onLogout, lang, onLangChange }) {
   const t = (key) => tFor(lang, key)
   return (
@@ -579,6 +596,8 @@ function Layout({ children, isAuthenticated, onLogout, lang, onLangChange }) {
           {!isAuthenticated && <NavLink to="/login">{t('login')}</NavLink>}
           {!isAuthenticated && <NavLink to="/register">{t('register')}</NavLink>}
           <NavLink to="/jobs">{t('jobs')}</NavLink>
+          {isAuthenticated && <NavLink to="/dashboard">{t('dashboard')}</NavLink>}
+          {isAuthenticated && <NavLink to="/settings">Settings</NavLink>}
           <NavLink to="/chatbot">{t('chatbot')}</NavLink>
           {isAuthenticated && (
             <button type="button" className="link-btn" onClick={onLogout}>
@@ -596,6 +615,26 @@ function Layout({ children, isAuthenticated, onLogout, lang, onLangChange }) {
         </nav>
       </header>
       <main>{children}</main>
+      <FloatingChatbot lang={lang} />
+    </div>
+  )
+}
+
+function FloatingChatbot({ lang }) {
+  const location = useLocation()
+  const visible = location.pathname === '/jobs' || location.pathname === '/dashboard'
+  const [open, setOpen] = useState(false)
+  if (!visible) return null
+  return (
+    <div className="chat-float-wrap">
+      {open && (
+        <div className="chat-float-panel">
+          <ChatbotPage token={localStorage.getItem('auth_token') || ''} lang={lang} compact />
+        </div>
+      )}
+      <button type="button" className="chat-float-btn" onClick={() => setOpen((prev) => !prev)} aria-label="Open chatbot">
+        Chat
+      </button>
     </div>
   )
 }
@@ -798,7 +837,9 @@ function JobsPage({ token, lang }) {
   const [cvFile, setCvFile] = useState(null)
   const [uploadError, setUploadError] = useState('')
   const [uploadMessage, setUploadMessage] = useState('')
+  const [showMap, setShowMap] = useState(false)
   const nearbyCities = getNearbyCities(filters.country, filters.city)
+  const mappableJobs = jobs.filter((job) => Number.isFinite(job.latitude) && Number.isFinite(job.longitude))
 
   const handleCvUpload = async (event) => {
     event.preventDefault()
@@ -1192,12 +1233,46 @@ function JobsPage({ token, lang }) {
           </button>
         </div>
       )}
+      <div className="actions">
+        <button
+          type="button"
+          className="btn btn-secondary"
+          onClick={() => setShowMap((prev) => !prev)}
+          disabled={mappableJobs.length === 0}
+        >
+          {showMap ? 'Hide map' : 'Show map (optional)'}
+        </button>
+      </div>
+      {showMap && mappableJobs.length > 0 && (
+        <section className="card map-panel">
+          <h3>Map view</h3>
+          <iframe
+            title="Job map"
+            src={buildOsmEmbedUrl(mappableJobs[0].latitude, mappableJobs[0].longitude)}
+            className="map-frame"
+            loading="lazy"
+          />
+          <div className="map-list">
+            {mappableJobs.slice(0, 8).map((job) => {
+              const origin = encodeURIComponent(filters.city || 'Germany')
+              const destination = encodeURIComponent(`${job.latitude},${job.longitude}`)
+              const routeUrl = `https://www.google.com/maps/dir/?api=1&origin=${origin}&destination=${destination}&travelmode=driving`
+              return (
+                <div key={`map-${job.job_id || job.id}-${job.title}`} className="match-item">
+                  <strong>{job.title}</strong>
+                  <p>{job.company} - {job.city || job.location}</p>
+                  {job.distance_label && <small>{job.distance_label}</small>}
+                  <a href={routeUrl} target="_blank" rel="noopener noreferrer">Open route</a>
+                </div>
+              )
+            })}
+          </div>
+        </section>
+      )}
       <div className="jobs-list">
         {jobs.map((job) => (
           <article className="job-item" key={`${job.job_id || 'job'}-${job.external_id || job.id || job.title}`}>
-            {job.company_logo_url && (
-              <img className="job-logo" src={job.company_logo_url} alt={`${job.company || 'Company'} logo`} loading="lazy" />
-            )}
+            {renderCompanyLogo(job)}
             <h3>{job.title}</h3>
             <p>{job.company}</p>
             <small>{job.city || job.location}</small>
@@ -1770,9 +1845,7 @@ function DashboardPage({ currentUser, token, onAuthInvalid, lang }) {
           {matches.length === 0 && !matchesError && !matchSearchMeta.message && <p>{t('noMatches')}</p>}
           {matches.map((item) => (
             <div className="match-item" key={item.job_id}>
-              {item.company_logo_url && (
-                <img className="job-logo" src={item.company_logo_url} alt={`${item.company || 'Company'} logo`} loading="lazy" />
-              )}
+              {renderCompanyLogo(item)}
               <strong>{item.title}</strong>
               <p>
                 {item.company} - {item.city || item.location}
@@ -1810,7 +1883,7 @@ function DashboardPage({ currentUser, token, onAuthInvalid, lang }) {
   )
 }
 
-function ChatbotPage({ token, lang }) {
+function ChatbotPage({ token, lang, compact = false }) {
   const t = (key) => tFor(lang, key)
   const [messages, setMessages] = useState([
     { role: 'assistant', content: tFor(lang, 'chatbotGreeting') },
@@ -1818,6 +1891,31 @@ function ChatbotPage({ token, lang }) {
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
+  const [voiceEnabled, setVoiceEnabled] = useState(false)
+  const [listening, setListening] = useState(false)
+  const [speakReplies, setSpeakReplies] = useState(false)
+
+  useEffect(() => {
+    const loadCvGreeting = async () => {
+      if (!token) return
+      try {
+        const response = await fetchWithFallback('/auth/me', { headers: { Authorization: `Bearer ${token}` } })
+        if (!response.ok) return
+        const data = await response.json()
+        const name = data?.cv_status?.candidate_name || data?.name || ''
+        if (!name) return
+        const greetingByLang = {
+          en: `Hi ${name}, I found your CV. How can I help you find jobs?`,
+          de: `Hallo ${name}, ich habe deinen Lebenslauf gefunden. Wie kann ich dir bei der Jobsuche helfen?`,
+          ar: `مرحبًا ${name}، وجدت سيرتك الذاتية. كيف يمكنني مساعدتك في العثور على وظيفة؟`,
+        }
+        setMessages([{ role: 'assistant', content: greetingByLang[lang] || greetingByLang.en }])
+      } catch {
+        // keep default greeting
+      }
+    }
+    loadCvGreeting()
+  }, [token, lang])
 
   const sendMessage = async (event) => {
     event.preventDefault()
@@ -1839,7 +1937,14 @@ function ChatbotPage({ token, lang }) {
       if (!response.ok) {
         throw new Error(data.detail || 'Chatbot request failed')
       }
-      setMessages((prev) => [...prev, { role: 'assistant', content: data.reply || 'No response.' }])
+      const replyText = data.reply || 'No response.'
+      setMessages((prev) => [...prev, { role: 'assistant', content: replyText }])
+      if (speakReplies && typeof window !== 'undefined' && window.speechSynthesis) {
+        const utterance = new SpeechSynthesisUtterance(replyText)
+        utterance.lang = lang === 'de' ? 'de-DE' : lang === 'ar' ? 'ar-SA' : 'en-US'
+        window.speechSynthesis.cancel()
+        window.speechSynthesis.speak(utterance)
+      }
     } catch (err) {
       setError(err.message || 'Chatbot failed')
     } finally {
@@ -1847,10 +1952,48 @@ function ChatbotPage({ token, lang }) {
     }
   }
 
+  const startVoiceInput = () => {
+    if (typeof window === 'undefined') return
+    const SR = window.SpeechRecognition || window.webkitSpeechRecognition
+    if (!SR) {
+      setError('Speech recognition is not available in this browser.')
+      return
+    }
+    const recog = new SR()
+    // Browser support for full auto-detect varies; this keeps multilingual usage practical.
+    recog.lang = lang === 'de' ? 'de-DE' : lang === 'ar' ? 'ar-SA' : 'en-US'
+    recog.continuous = false
+    recog.interimResults = false
+    setListening(true)
+    recog.onresult = (evt) => {
+      const transcript = evt?.results?.[0]?.[0]?.transcript || ''
+      setInput((prev) => `${prev} ${transcript}`.trim())
+      setListening(false)
+    }
+    recog.onerror = () => setListening(false)
+    recog.onend = () => setListening(false)
+    recog.start()
+  }
+
   return (
-    <section className="card chatbot">
+    <section className={`card chatbot ${compact ? 'compact' : ''}`}>
       <h2>{t('chatbot')}</h2>
       {error && <p className="error">{error}</p>}
+      <div className="actions">
+        <button type="button" className="btn btn-secondary" onClick={() => setVoiceEnabled((v) => !v)}>
+          {voiceEnabled ? 'Voice: On' : 'Voice: Off'}
+        </button>
+        {voiceEnabled && (
+          <>
+            <button type="button" className="btn btn-secondary" onClick={startVoiceInput} disabled={listening}>
+              {listening ? 'Listening...' : 'Speak'}
+            </button>
+            <button type="button" className="btn btn-secondary" onClick={() => setSpeakReplies((v) => !v)}>
+              {speakReplies ? 'Read replies: On' : 'Read replies: Off'}
+            </button>
+          </>
+        )}
+      </div>
       <div className="chat-stream">
         {messages.map((message, idx) => (
           <div key={`chat-msg-${idx}`} className={`bubble ${message.role === 'user' ? 'user' : 'bot'}`}>
@@ -1868,6 +2011,126 @@ function ChatbotPage({ token, lang }) {
         <button type="submit" className="btn" disabled={loading}>
           {loading ? t('searching') : t('search')}
         </button>
+      </form>
+    </section>
+  )
+}
+
+function SettingsPage({ token }) {
+  const [email, setEmail] = useState('')
+  const [phone, setPhone] = useState('')
+  const [status, setStatus] = useState('')
+  const [error, setError] = useState('')
+  const [resetEmail, setResetEmail] = useState('')
+  const [resetInfo, setResetInfo] = useState('')
+
+  useEffect(() => {
+    const load = async () => {
+      try {
+        const response = await fetchWithFallback('/auth/me', { headers: { Authorization: `Bearer ${token}` } })
+        if (!response.ok) return
+        const data = await response.json()
+        setEmail(data.email || '')
+        setPhone(data.phone || '')
+        setResetEmail(data.email || '')
+      } catch {
+        // noop
+      }
+    }
+    load()
+  }, [token])
+
+  const saveSettings = async (event) => {
+    event.preventDefault()
+    setError('')
+    setStatus('')
+    try {
+      const response = await fetchWithFallback('/profile/settings', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ email, phone }),
+      })
+      const data = await response.json()
+      if (!response.ok) throw new Error(data.detail || 'Could not save settings')
+      setStatus(data.message || 'Settings saved.')
+    } catch (err) {
+      setError(err.message || 'Could not save settings')
+    }
+  }
+
+  const requestReset = async (event) => {
+    event.preventDefault()
+    setResetInfo('')
+    try {
+      const response = await fetchWithFallback('/auth/password-reset/request', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: resetEmail }),
+      })
+      const data = await response.json()
+      if (!response.ok) throw new Error(data.detail || 'Reset request failed')
+      setResetInfo(data.dev_reset_link ? `${data.message} ${data.dev_reset_link}` : (data.message || 'Reset requested'))
+    } catch (err) {
+      setResetInfo(err.message || 'Reset request failed')
+    }
+  }
+
+  return (
+    <section className="card">
+      <h2>Settings</h2>
+      <form className="form-grid" onSubmit={saveSettings}>
+        <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="Email" />
+        <input type="tel" value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="Phone number (optional)" />
+        {error && <p className="error">{error}</p>}
+        {status && <p className="success">{status}</p>}
+        <button className="btn" type="submit">Save profile</button>
+      </form>
+      <hr />
+      <h3>Password reset by email</h3>
+      <form className="form-grid" onSubmit={requestReset}>
+        <input type="email" value={resetEmail} onChange={(e) => setResetEmail(e.target.value)} placeholder="Account email" />
+        <button className="btn btn-secondary" type="submit">Send reset link</button>
+      </form>
+      {resetInfo && <p className="success">{resetInfo}</p>}
+      <p className="muted">SMS reset is optional for future setup and can be enabled when an SMS provider is configured.</p>
+    </section>
+  )
+}
+
+function ResetPasswordPage() {
+  const [params] = useSearchParams()
+  const token = (params.get('token') || '').trim()
+  const [newPassword, setNewPassword] = useState('')
+  const [status, setStatus] = useState('')
+  const [error, setError] = useState('')
+
+  const submit = async (event) => {
+    event.preventDefault()
+    setError('')
+    setStatus('')
+    try {
+      const response = await fetchWithFallback('/auth/password-reset/confirm', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token, new_password: newPassword }),
+      })
+      const data = await response.json()
+      if (!response.ok) throw new Error(data.detail || 'Password reset failed')
+      setStatus(data.message || 'Password reset successful.')
+    } catch (err) {
+      setError(err.message || 'Password reset failed')
+    }
+  }
+
+  return (
+    <section className="card">
+      <h2>Reset Password</h2>
+      {!token && <p className="error">Missing reset token.</p>}
+      <form className="form-grid" onSubmit={submit}>
+        <input type="password" value={newPassword} onChange={(e) => setNewPassword(e.target.value)} placeholder="New password" />
+        {error && <p className="error">{error}</p>}
+        {status && <p className="success">{status}</p>}
+        <button className="btn" type="submit" disabled={!token}>Update password</button>
       </form>
     </section>
   )
@@ -1939,6 +2202,23 @@ function App() {
           <Route path="/login" element={<LoginPage onLogin={handleLogin} lang={lang} />} />
           <Route path="/register" element={<RegisterPage lang={lang} />} />
           <Route path="/jobs" element={<JobsPage token={token} lang={lang} />} />
+          <Route
+            path="/settings"
+            element={(
+              <ProtectedRoute isAuthenticated={isAuthenticated}>
+                <SettingsPage token={token} />
+              </ProtectedRoute>
+            )}
+          />
+          <Route path="/reset-password" element={<ResetPasswordPage />} />
+          <Route
+            path="/dashboard"
+            element={(
+              <ProtectedRoute isAuthenticated={isAuthenticated}>
+                <DashboardPage currentUser={currentUser} token={token} onAuthInvalid={handleAuthInvalid} lang={lang} />
+              </ProtectedRoute>
+            )}
+          />
           <Route path="/chatbot" element={<ChatbotPage token={token} lang={lang} />} />
         </Routes>
       </Layout>

@@ -8,12 +8,14 @@ import json
 import re
 import zipfile
 import threading
+import smtplib
 from io import BytesIO
 from pathlib import Path
 from datetime import datetime, timedelta
 from urllib.parse import urlparse, quote_plus
 from urllib.request import Request, urlopen
 from xml.etree import ElementTree as ET
+from email.message import EmailMessage
 
 from fastapi import Depends, FastAPI, File, Header, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -34,7 +36,7 @@ from job_fetcher import (
     get_last_fetch_diagnostics,
     suggest_job_titles,
 )
-from models import Application, AuthToken, Job, User
+from models import Application, AuthToken, Job, PasswordResetToken, User
 
 ENV_PATH = Path(__file__).resolve().parent / ".env"
 load_dotenv(dotenv_path=ENV_PATH, override=True)
@@ -134,6 +136,31 @@ class JobSearchPayload(BaseModel):
 
 class ChatbotPayload(BaseModel):
     message: str
+
+
+class ProfileSettingsPayload(BaseModel):
+    email: EmailStr | None = None
+    phone: str | None = None
+
+
+class PasswordResetRequestPayload(BaseModel):
+    email: EmailStr
+
+
+class PasswordResetConfirmPayload(BaseModel):
+    token: str
+    new_password: str
+
+
+class CvTextSavePayload(BaseModel):
+    cv_text: str
+    filename: str | None = None
+
+
+class ChatbotCvActionPayload(BaseModel):
+    cv_text: str
+    language: str | None = None
+    request: str | None = None
 
 ALL_VALUES = {"all", "any", "*", "all countries", "all cities"}
 PLACEHOLDER_VALUES = {"string", "null", "none", "undefined", "n/a", "-"}
@@ -268,6 +295,13 @@ def _resolve_city_coords(norm_city: str, raw_city: str, country: str) -> tuple[f
     if known:
         return known
     return _geocode_city(raw_city, country)
+
+
+def _job_coordinates(job: Job) -> tuple[float, float] | None:
+    city_key = _extract_job_city(job)
+    raw_city = job.city or (job.location.split(",")[0].strip() if job.location else "")
+    country = (job.country or "Germany").strip() or "Germany"
+    return _resolve_city_coords(city_key, raw_city, country)
 
 
 def _geocode_city(raw_city: str, country: str) -> tuple[float, float] | None:
@@ -543,9 +577,12 @@ def upsert_fetched_jobs(db: Session, jobs: list[dict]) -> int:
         if not existing:
             existing = Job(source=source, external_id=external_id or None)
             db.add(existing)
-            existing.created_at = _parse_posted_at(row.get("posted_at")) or datetime.utcnow()
-        elif not existing.created_at:
-            existing.created_at = _parse_posted_at(row.get("posted_at")) or datetime.utcnow()
+            existing.created_at = datetime.utcnow()
+        posted_date = _parse_posted_at(row.get("posted_at"))
+        if not existing.posted_date:
+            existing.posted_date = posted_date or existing.created_at or datetime.utcnow()
+        elif posted_date:
+            existing.posted_date = min(existing.posted_date, posted_date)
         existing.title = (row.get("title") or "Unknown Role")[:160]
         existing.company = (row.get("company") or "Unknown Company")[:160]
         existing.location = (row.get("location") or "Unknown")[:120]
@@ -559,10 +596,64 @@ def upsert_fetched_jobs(db: Session, jobs: list[dict]) -> int:
         existing.apply_url = apply_url[:600] or None
         existing.description = (row.get("description") or "")[:4000] or None
         existing.skills_csv = (row.get("skills_csv") or "")[:1200] or None
+        existing.last_updated = datetime.utcnow()
+        logo_url = (row.get("company_logo_url") or "").strip()
+        if not logo_url and apply_url:
+            try:
+                host = (urlparse(apply_url).hostname or "").strip().lower()
+                if host.startswith("www."):
+                    host = host[4:]
+                if host:
+                    logo_url = f"https://logo.clearbit.com/{host}"
+            except Exception:
+                logo_url = ""
+        existing.company_logo_url = logo_url[:600] or None
         saved += 1
 
     db.commit()
     return saved
+
+
+def _extract_cv_profile(cv_text: str) -> dict:
+    text = (cv_text or "").strip()
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    lowered = text.lower()
+
+    candidate_name = None
+    for idx, line in enumerate(lines[:8]):
+        if re.match(r"^[A-Za-z][A-Za-z\s\-']{2,60}$", line) and "@" not in line and not any(ch.isdigit() for ch in line):
+            candidate_name = line
+            break
+        if line.lower().startswith("name:"):
+            candidate_name = line.split(":", 1)[1].strip()
+            break
+        if idx == 0 and len(line.split()) in {2, 3} and "@" not in line:
+            candidate_name = line
+            break
+
+    keyword_pool = normalize_skill_tokens(tokenize(text))
+    skills = sorted([token for token in keyword_pool if token in SKILL_KEYWORDS])[:20]
+    exp_summary = ""
+    exp_lines = [line for line in lines if any(k in line.lower() for k in ["experience", "years", "worked", "employment"])]
+    if exp_lines:
+        exp_summary = " ".join(exp_lines[:2])[:300]
+    else:
+        years = extract_years_experience(text)
+        if years > 0:
+            exp_summary = f"About {years}+ years of experience."
+
+    preferred_keywords = []
+    for phrase in ["nurse", "pflege", "developer", "engineer", "warehouse", "driver", "assistant", "support", "remote", "healthcare"]:
+        if phrase in lowered:
+            preferred_keywords.append(phrase)
+    preferred_keywords.extend(skills[:8])
+    preferred_keywords = list(dict.fromkeys(preferred_keywords))[:20]
+    return {
+        "name": candidate_name,
+        "skills": skills,
+        "experience_summary": exp_summary,
+        "preferred_keywords": preferred_keywords,
+    }
 
 
 def extract_cv_text(file: UploadFile) -> str:
@@ -642,7 +733,7 @@ def extract_cv_text(file: UploadFile) -> str:
     )
 
 
-def _chatbot_reply(message: str, user: User | None = None) -> str:
+def _chatbot_reply(message: str, user: User | None = None, db: Session | None = None) -> str:
     text = (message or "").strip()
     if not text:
         return "Please type a message."
@@ -684,7 +775,6 @@ def _chatbot_reply(message: str, user: User | None = None) -> str:
             "danke",
             "interview",
             "fragen",
-            "job",
         ]
         german_romanized_markers = [
             "lebenslauf",
@@ -766,7 +856,14 @@ def _chatbot_reply(message: str, user: User | None = None) -> str:
     pref_title = (prefs.get("job_title") or "").strip()
     pref_city = (prefs.get("city") or "").strip()
     pref_country = (prefs.get("country") or "").strip()
+    cv_name = (user.cv_candidate_name or user.name or "").strip() if user else ""
+    cv_skills = [item.strip() for item in (user.cv_skills_csv or "").split(",") if item.strip()] if user else []
+    cv_keywords = [item.strip() for item in (user.cv_preferred_keywords_csv or "").split(",") if item.strip()] if user else []
     intent = _intent(lower)
+    role_match = re.search(r"(as|als|als eine|als ein|wie)\s+([a-zA-Z\u0600-\u06FF\s\-]{3,40})", text, flags=re.IGNORECASE)
+    role_from_text = (role_match.group(2).strip() if role_match else "")
+    city_match = re.search(r"\b(in|near|bei|um|nähe|في|قرب)\s+([a-zA-Z\u0600-\u06FFäöüÄÖÜß\s\-]{2,40})", text, flags=re.IGNORECASE)
+    city_from_text = (city_match.group(2).strip() if city_match else "")
 
     def _rule_based_reply() -> str:
         focus_en = pref_title or "your target role"
@@ -790,9 +887,13 @@ def _chatbot_reply(message: str, user: User | None = None) -> str:
                     "For interviews, practice concise STAR examples and include numbers when possible.",
                 ],
                 "jobs": [
-                    f"Let's search for {focus_en} in {place_en}. Use a broader title and radius if results are low.",
-                    f"We can target {focus_en} in {place_en}. If results are low, widen city/radius and simplify filters.",
-                    f"Quick plan: search {focus_en} in {place_en}, then expand radius and remove strict filters if needed.",
+                    (
+                        f"Hi {cv_name}, I found your CV. Let's search for {(role_from_text or focus_en)} in "
+                        f"{(city_from_text or place_en)}. "
+                        f"Based on your CV, highlight skills like {', '.join(cv_skills[:3]) or 'your strongest skills'}."
+                    ),
+                    f"We can target {(role_from_text or focus_en)} in {(city_from_text or place_en)}. If results are low, widen city/radius and simplify filters.",
+                    f"Next step: open Jobs search with title={(role_from_text or focus_en)} and city={(city_from_text or place_en)}; old valid jobs can still match.",
                 ],
                 "translate": [
                     "Sure. Share the exact sentence, and I will explain it in Arabic, German, or English.",
@@ -817,9 +918,12 @@ def _chatbot_reply(message: str, user: User | None = None) -> str:
                     "Für Interviews: kurze STAR-Beispiele vorbereiten und wenn möglich Zahlen nennen.",
                 ],
                 "jobs": [
-                    f"Lass uns nach {focus_de} in {place_de} suchen. Bei wenigen Treffern Titel und Radius erweitern.",
-                    f"Wir suchen {focus_de} in {place_de}. Wenn wenig kommt, Stadt/Radius erweitern und Filter vereinfachen.",
-                    f"Kurzplan: {focus_de} in {place_de} suchen, dann Radius erweitern und strenge Filter lockern.",
+                    (
+                        f"Hi {cv_name}, ich habe deinen Lebenslauf gefunden. Wir suchen nach {(role_from_text or focus_de)} "
+                        f"in {(city_from_text or place_de)}. Betone Skills wie {', '.join(cv_skills[:3]) or 'deine stärksten Skills'}."
+                    ),
+                    f"Wir suchen {(role_from_text or focus_de)} in {(city_from_text or place_de)}. Wenn wenig kommt, Stadt/Radius erweitern und Filter vereinfachen.",
+                    f"Nächster Schritt: Jobsuche mit Titel={(role_from_text or focus_de)} und Stadt={(city_from_text or place_de)} starten.",
                 ],
                 "translate": [
                     "Gerne. Schick den genauen Satz, dann erkläre ich ihn auf Arabisch, Deutsch oder Englisch.",
@@ -844,9 +948,12 @@ def _chatbot_reply(message: str, user: User | None = None) -> str:
                     "للمقابلة: تدرب على أمثلة STAR مختصرة واذكر أرقامًا عند الإمكان.",
                 ],
                 "jobs": [
-                    f"خلّينا نبحث عن {focus_ar} في {place_ar}. إذا النتائج قليلة، وسّع المسمى ونطاق المسافة.",
-                    f"نقدر نستهدف {focus_ar} في {place_ar}. عند قلة النتائج، خفّف الفلاتر ووسّع المدينة/المسافة.",
-                    f"خطة سريعة: ابحث عن {focus_ar} في {place_ar} ثم وسّع المسافة وقلّل الفلاتر الصارمة.",
+                    (
+                        f"مرحبًا {cv_name}، وجدت سيرتك الذاتية. خلّينا نبحث عن {(role_from_text or focus_ar)} في "
+                        f"{(city_from_text or place_ar)}. ركّز على مهارات مثل {', '.join(cv_skills[:3]) or 'أقوى مهاراتك'}."
+                    ),
+                    f"نقدر نستهدف {(role_from_text or focus_ar)} في {(city_from_text or place_ar)}. عند قلة النتائج، خفّف الفلاتر ووسّع المدينة/المسافة.",
+                    f"الخطوة التالية: شغّل بحث الوظائف بعنوان={(role_from_text or focus_ar)} ومدينة={(city_from_text or place_ar)}.",
                 ],
                 "translate": [
                     "أكيد. أرسل الجملة المطلوبة وحدد اللغة الهدف، وأشرحها لك بشكل مختصر.",
@@ -870,15 +977,19 @@ def _chatbot_reply(message: str, user: User | None = None) -> str:
     cv_hint = "yes" if user and (user.cv_text or "").strip() else "no"
     system_prompt = (
         "You are Smart Job Platform assistant. Be concise and practical. "
-        "Reply in the same language as the user's message (English, German, or Arabic). "
+        "Reply strictly in one language only: same language as the user's message (English, German, or Arabic). "
         "If the user explicitly asks for another reply language, use the requested language. "
+        "Do not switch languages in the same response. "
         "Keep answers lightweight and job-focused. "
         "Help users with job search, CV improvement, interview prep, and platform actions."
     )
     user_prompt = (
         f"User message: {text}\n"
         f"User has CV uploaded: {cv_hint}\n"
-        f"User preferences: {json.dumps(user_pref)}"
+        f"User preferences: {json.dumps(user_pref)}\n"
+        f"CV name: {cv_name or 'unknown'}\n"
+        f"CV skills: {', '.join(cv_skills[:12])}\n"
+        f"CV keywords: {', '.join(cv_keywords[:12])}"
     )
     payload = {
         "model": model,
@@ -1047,25 +1158,33 @@ def compute_match(job: Job, cv_text: str, preferences: dict | None = None) -> di
         reasons.append("General profile alignment based on available text.")
 
     posted_days = None
-    posted_label = "New"
-    if job.created_at:
+    posted_label = "Recently posted"
+    posted_at = job.posted_date or job.created_at
+    if posted_at:
         try:
-            delta = datetime.utcnow() - job.created_at
+            delta = datetime.utcnow() - posted_at
             posted_days = max(delta.days, 0)
             posted_hours = max(int(delta.total_seconds() // 3600), 0)
             if posted_hours < 1:
-                posted_label = "Posted just now"
-            elif posted_hours < 24:
-                posted_label = f"Posted {posted_hours} hours ago"
-            else:
+                posted_label = "Posted today"
+            elif posted_days == 0:
+                posted_label = "Posted today"
+            elif posted_days == 1:
+                posted_label = "Posted 1 day ago"
+            elif posted_days < 7:
                 posted_label = f"Posted {posted_days} days ago"
+            elif posted_days < 14:
+                posted_label = "Posted 1 week ago"
+            else:
+                posted_label = f"Posted {round(posted_days / 7)} weeks ago"
         except Exception:
             posted_days = None
-            posted_label = "New"
+            posted_label = "Recently posted"
     distance_km = _distance_km((preferences or {}).get("city") or "", job)
     distance_label = f"{distance_km} km away" if distance_km is not None else None
-    company_logo_url = None
-    if job.apply_url:
+    coords = _job_coordinates(job)
+    company_logo_url = (job.company_logo_url or "").strip() or None
+    if not company_logo_url and job.apply_url:
         try:
             host = (urlparse(job.apply_url).hostname or "").strip().lower()
             if host:
@@ -1088,10 +1207,15 @@ def compute_match(job: Job, cv_text: str, preferences: dict | None = None) -> di
         "job_type": job.job_type,
         "apply_url": job.apply_url,
         "company_logo_url": company_logo_url,
+        "company_initials": "".join([part[0] for part in (job.company or "").split()[:2]]).upper() or "CO",
         "posted_days": posted_days,
         "posted_label": posted_label,
+        "posted_date": (posted_at.isoformat() if posted_at else None),
+        "last_updated": (job.last_updated.isoformat() if job.last_updated else None),
         "distance_km": distance_km,
         "distance_label": distance_label,
+        "latitude": coords[0] if coords else None,
+        "longitude": coords[1] if coords else None,
         "score": score,
         "skill_score": skill_score_total,
         "preference_score": preference_score,
@@ -1103,6 +1227,14 @@ def compute_match(job: Job, cv_text: str, preferences: dict | None = None) -> di
         "preference_matched": preference_alignment["matched"],
         "preference_not_matched": preference_alignment["not_matched"],
     }
+
+
+def _rank_key(item: dict) -> tuple[int, str, str]:
+    return (
+        int(item.get("score") or 0),
+        item.get("last_updated") or "",
+        item.get("posted_date") or "",
+    )
 
 
 def get_current_user(authorization: str, db: Session) -> User:
@@ -1124,6 +1256,10 @@ def get_cv_status(user: User) -> dict:
         "has_cv": bool((user.cv_text or "").strip()),
         "cv_filename": user.cv_filename,
         "cv_chars": len((user.cv_text or "").strip()),
+        "candidate_name": user.cv_candidate_name,
+        "skills": [token.strip() for token in (user.cv_skills_csv or "").split(",") if token.strip()],
+        "experience_summary": user.cv_experience_summary,
+        "preferred_keywords": [token.strip() for token in (user.cv_preferred_keywords_csv or "").split(",") if token.strip()],
     }
 
 
@@ -1136,6 +1272,133 @@ def get_preferences(user: User) -> dict:
         "job_type": user.preferred_job_type,
         "experience_level": user.preferred_experience_level,
     }
+
+
+def _is_email_configured() -> bool:
+    return bool((os.getenv("SMTP_HOST") or "").strip() and (os.getenv("SMTP_FROM") or "").strip())
+
+
+def _send_reset_email(target_email: str, reset_link: str) -> tuple[bool, str]:
+    if not _is_email_configured():
+        return False, "Email provider is not configured. Password reset link generated for development only."
+
+    smtp_host = (os.getenv("SMTP_HOST") or "").strip()
+    smtp_port = int((os.getenv("SMTP_PORT") or "587").strip() or "587")
+    smtp_user = (os.getenv("SMTP_USER") or "").strip()
+    smtp_password = (os.getenv("SMTP_PASSWORD") or "").strip()
+    smtp_from = (os.getenv("SMTP_FROM") or "").strip()
+    use_tls = (os.getenv("SMTP_USE_TLS") or "1").strip().lower() in {"1", "true", "yes", "on"}
+
+    msg = EmailMessage()
+    msg["Subject"] = "Smart Job Platform Password Reset"
+    msg["From"] = smtp_from
+    msg["To"] = target_email
+    msg.set_content(
+        "We received a password reset request.\n\n"
+        f"Reset your password using this link:\n{reset_link}\n\n"
+        "If you did not request this, you can ignore this email."
+    )
+    try:
+        with smtplib.SMTP(smtp_host, smtp_port, timeout=20) as server:
+            if use_tls:
+                server.starttls()
+            if smtp_user:
+                server.login(smtp_user, smtp_password)
+            server.send_message(msg)
+        return True, "Password reset email sent."
+    except Exception as exc:
+        logger.warning("password_reset_email_failed error=%s", exc)
+        return False, "Email delivery failed safely. Please contact support or try again later."
+
+
+def _generate_cv_outputs(cv_text: str, language: str = "en", request_text: str = "") -> dict:
+    text = (cv_text or "").strip()
+    lang = (language or "en").strip().lower()
+    if lang not in {"en", "de", "ar"}:
+        lang = "en"
+    profile = _extract_cv_profile(text)
+    skills = profile.get("skills") or []
+    exp_summary = profile.get("experience_summary") or ""
+    name = profile.get("name") or "Candidate"
+    key = (os.getenv("OPENAI_API_KEY") or "").strip()
+
+    fallback = {
+        "en": {
+            "summary": f"{name} profile summary: {exp_summary or 'General professional background'} Skills: {', '.join(skills[:8]) or 'Not clearly listed'}.",
+            "tips": [
+                "Add a strong headline with target role and years of experience.",
+                "Use measurable achievements in each experience bullet.",
+                "Group skills into technical/domain/language sections.",
+            ],
+        },
+        "de": {
+            "summary": f"Profil-Zusammenfassung von {name}: {exp_summary or 'Allgemeiner beruflicher Hintergrund'} Skills: {', '.join(skills[:8]) or 'Nicht klar aufgeführt'}.",
+            "tips": [
+                "Füge eine klare Überschrift mit Zielrolle und Berufserfahrung hinzu.",
+                "Nutze messbare Erfolge in jedem Erfahrungsabschnitt.",
+                "Strukturiere Skills in technische/fachliche/sprachliche Gruppen.",
+            ],
+        },
+        "ar": {
+            "summary": f"ملخص ملف {name}: {exp_summary or 'خلفية مهنية عامة'} المهارات: {', '.join(skills[:8]) or 'غير واضحة بشكل كافٍ'}.",
+            "tips": [
+                "أضف عنوانًا مهنيًا واضحًا مع المسمى المستهدف وسنوات الخبرة.",
+                "اكتب إنجازات قابلة للقياس تحت كل خبرة.",
+                "قسّم المهارات إلى فئات تقنية ومجالية ولغوية.",
+            ],
+        },
+    }
+
+    if not key:
+        improved = (
+            f"{name}\n\n"
+            f"Professional Summary\n{fallback[lang]['summary']}\n\n"
+            "Core Skills\n- " + ("\n- ".join(skills[:12]) if skills else "Add your most relevant skills here.") + "\n\n"
+            "Experience\n- Add role, company, dates, and 3 quantified achievements per role.\n\n"
+            "Education\n- Add degree, institution, graduation year.\n"
+        )
+        return {"summary": fallback[lang]["summary"], "suggestions": fallback[lang]["tips"], "improved_cv_text": improved}
+
+    model = (os.getenv("OPENAI_MODEL") or "gpt-4o-mini").strip()
+    prompt = (
+        "You are an expert CV writer. Return strict JSON with keys: summary, suggestions, improved_cv_text. "
+        "summary is 2-4 sentences. suggestions is array of 3-6 concise improvements. "
+        "improved_cv_text is a full professional CV rewrite with headings and bullet points.\n"
+        f"Target language: {lang}. Follow user request if provided.\n"
+        f"User request: {request_text or 'Improve this CV professionally.'}\n"
+        f"Original CV:\n{text[:12000]}"
+    )
+    try:
+        req = Request(
+            "https://api.openai.com/v1/chat/completions",
+            data=json.dumps(
+                {
+                    "model": model,
+                    "temperature": 0.2,
+                    "max_tokens": 1200,
+                    "response_format": {"type": "json_object"},
+                    "messages": [{"role": "user", "content": prompt}],
+                }
+            ).encode("utf-8"),
+            headers={"Content-Type": "application/json", "Authorization": f"Bearer {key}"},
+            method="POST",
+        )
+        with urlopen(req, timeout=35) as response:  # nosec B310
+            data = json.loads(response.read().decode("utf-8"))
+        content = (((data.get("choices") or [{}])[0].get("message") or {}).get("content") or "{}").strip()
+        parsed = json.loads(content)
+        return {
+            "summary": (parsed.get("summary") or fallback[lang]["summary"])[:2000],
+            "suggestions": parsed.get("suggestions") or fallback[lang]["tips"],
+            "improved_cv_text": (parsed.get("improved_cv_text") or "").strip() or text,
+        }
+    except Exception as exc:
+        logger.warning("cv_generate_failed error=%s", exc)
+        improved = (
+            f"{name}\n\nProfessional Summary\n{fallback[lang]['summary']}\n\n"
+            "Core Skills\n- " + ("\n- ".join(skills[:12]) if skills else "Add your most relevant skills here.")
+        )
+        return {"summary": fallback[lang]["summary"], "suggestions": fallback[lang]["tips"], "improved_cv_text": improved}
 
 
 def merge_search_preferences(base: dict, payload: JobSearchPayload | None) -> dict:
@@ -1317,7 +1580,7 @@ def _refresh_jobs_for_all_users_once() -> dict[str, int]:
 
 
 def _auto_refresh_loop() -> None:
-    interval_seconds = max(3600, int((os.getenv("AUTO_REFRESH_INTERVAL_SECONDS") or "86400").strip() or "86400"))
+    interval_seconds = max(86400, int((os.getenv("AUTO_REFRESH_INTERVAL_SECONDS") or "86400").strip() or "86400"))
     run_on_start = (os.getenv("AUTO_REFRESH_RUN_ON_START") or "1").strip().lower() in {"1", "true", "yes", "on"}
     logger.info("auto_refresh_loop started interval_seconds=%s run_on_start=%s", interval_seconds, run_on_start)
     if run_on_start:
@@ -1446,15 +1709,13 @@ def health_providers(
 
 @app.get("/jobs")
 def get_jobs(db: Session = Depends(get_db)):
-    fresh_since = datetime.utcnow() - timedelta(days=FRESH_DAYS)
     sources = active_job_sources()
     rows = (
         db.query(Job)
         .filter(Job.source.in_(sources))
         .filter(Job.apply_url.isnot(None))
         .filter(Job.apply_url != "")
-        .filter(Job.created_at >= fresh_since)
-        .order_by(Job.id.desc())
+        .order_by(Job.last_updated.desc(), Job.posted_date.desc(), Job.id.desc())
         .all()
     )
     return [
@@ -1465,6 +1726,8 @@ def get_jobs(db: Session = Depends(get_db)):
             "company": job.company,
             "location": job.location,
             "apply_url": job.apply_url,
+            "posted_date": (job.posted_date.isoformat() if job.posted_date else None),
+            "last_updated": (job.last_updated.isoformat() if job.last_updated else None),
         }
         for job in rows
     ]
@@ -1551,8 +1814,7 @@ def search_jobs(
         if active_preferences.get("work_mode"):
             query = query.filter(Job.work_mode == active_preferences["work_mode"])
 
-        fresh_since = datetime.utcnow() - timedelta(days=FRESH_DAYS)
-        rows = query.filter(Job.created_at >= fresh_since).order_by(Job.id.desc()).limit(500).all()
+        rows = query.order_by(Job.last_updated.desc(), Job.posted_date.desc(), Job.id.desc()).limit(500).all()
         if (not broad_mode) and city_pref_local and city_pref_local.lower() not in ALL_VALUES:
             filtered_jobs = []
             for job in rows:
@@ -1636,7 +1898,7 @@ def search_jobs(
         ",".join(sorted({job.source for job in jobs})) if jobs else "-",
         broad_mode,
     )
-    ranked = sorted((compute_match(job, cv_text, preferences) for job in jobs), key=lambda row: row["score"], reverse=True)
+    ranked = sorted((compute_match(job, cv_text, preferences) for job in jobs), key=_rank_key, reverse=True)
     paged_items = ranked[offset : offset + limit]
     for item in paged_items:
         item["why_match"] = build_short_match_reason(
@@ -1824,9 +2086,83 @@ def me(authorization: str = Header(default=""), db: Session = Depends(get_db)):
         "id": user.id,
         "name": user.name,
         "email": user.email,
+        "phone": user.phone,
         "cv_status": get_cv_status(user),
         "preferences": get_preferences(user),
     }
+
+
+@app.put("/profile/settings")
+def update_profile_settings(
+    payload: ProfileSettingsPayload,
+    authorization: str = Header(default=""),
+    db: Session = Depends(get_db),
+):
+    user = get_current_user(authorization, db)
+    next_email = (payload.email or "").strip().lower()
+    next_phone = (payload.phone or "").strip()
+
+    if next_email and next_email != user.email:
+        existing = db.query(User).filter(User.email == next_email, User.id != user.id).first()
+        if existing:
+            raise HTTPException(status_code=400, detail="Email already in use")
+        user.email = next_email
+
+    user.phone = next_phone[:40] or None
+    db.add(user)
+    db.commit()
+    return {
+        "message": "Settings saved.",
+        "user": {"id": user.id, "name": user.name, "email": user.email, "phone": user.phone},
+        "sms_reset_configured": bool((os.getenv("SMS_PROVIDER_API_KEY") or "").strip()),
+    }
+
+
+@app.post("/auth/password-reset/request")
+def password_reset_request(payload: PasswordResetRequestPayload, db: Session = Depends(get_db)):
+    user = db.query(User).filter(User.email == payload.email.lower()).first()
+    if not user:
+        return {"message": "If this email exists, a reset link has been prepared."}
+
+    raw_token = secrets.token_urlsafe(32)
+    token_hash = hashlib.sha256(raw_token.encode("utf-8")).hexdigest()
+    expires_at = datetime.utcnow() + timedelta(minutes=30)
+    row = PasswordResetToken(token_hash=token_hash, user_id=user.id, expires_at=expires_at)
+    db.add(row)
+    db.commit()
+
+    frontend_base = (os.getenv("FRONTEND_BASE_URL") or "http://127.0.0.1:5173").strip()
+    reset_link = f"{frontend_base.rstrip('/')}/reset-password?token={raw_token}"
+    sent, status_message = _send_reset_email(user.email, reset_link)
+    response = {"message": status_message if sent else "Development mode: email provider not configured."}
+    if not sent:
+        response["dev_reset_link"] = reset_link
+    return response
+
+
+@app.post("/auth/password-reset/confirm")
+def password_reset_confirm(payload: PasswordResetConfirmPayload, db: Session = Depends(get_db)):
+    token = (payload.token or "").strip()
+    if len(token) < 10:
+        raise HTTPException(status_code=400, detail="Invalid token")
+    if len((payload.new_password or "").strip()) < 8:
+        raise HTTPException(status_code=400, detail="Password must be at least 8 characters")
+
+    token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
+    row = db.query(PasswordResetToken).filter(PasswordResetToken.token_hash == token_hash).first()
+    if not row or row.used_at is not None or row.expires_at < datetime.utcnow():
+        raise HTTPException(status_code=400, detail="Reset token is invalid or expired")
+
+    user = db.query(User).filter(User.id == row.user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    user.password_hash = hash_password(payload.new_password.strip())
+    row.used_at = datetime.utcnow()
+    db.add(user)
+    db.add(row)
+    db.commit()
+    return {"message": "Password reset successful."}
 
 
 @app.post("/applications")
@@ -1889,10 +2225,65 @@ def upload_cv(
 
     user.cv_filename = file.filename or "uploaded_cv"
     user.cv_text = cv_text.strip()
+    profile = _extract_cv_profile(user.cv_text)
+    user.cv_candidate_name = (profile.get("name") or "")[:160] or None
+    user.cv_skills_csv = ",".join(profile.get("skills") or [])[:1200] or None
+    user.cv_experience_summary = (profile.get("experience_summary") or "")[:1200] or None
+    user.cv_preferred_keywords_csv = ",".join(profile.get("preferred_keywords") or [])[:1200] or None
     db.add(user)
     db.commit()
 
     return {"message": "CV uploaded successfully", "cv_status": get_cv_status(user)}
+
+
+@app.post("/profile/cv/text")
+def save_cv_text(
+    payload: CvTextSavePayload,
+    authorization: str = Header(default=""),
+    db: Session = Depends(get_db),
+):
+    user = get_current_user(authorization, db)
+    text = (payload.cv_text or "").strip()
+    if len(text) < 20:
+        raise HTTPException(status_code=400, detail="CV text is too short")
+    user.cv_text = text
+    user.cv_filename = (payload.filename or "improved_cv.txt")[:255]
+    profile = _extract_cv_profile(user.cv_text)
+    user.cv_candidate_name = (profile.get("name") or "")[:160] or None
+    user.cv_skills_csv = ",".join(profile.get("skills") or [])[:1200] or None
+    user.cv_experience_summary = (profile.get("experience_summary") or "")[:1200] or None
+    user.cv_preferred_keywords_csv = ",".join(profile.get("preferred_keywords") or [])[:1200] or None
+    db.add(user)
+    db.commit()
+    return {"message": "CV text saved to profile.", "cv_status": get_cv_status(user)}
+
+
+@app.post("/chatbot/cv/analyze")
+def chatbot_cv_analyze(
+    file: UploadFile = File(...),
+    language: str = "en",
+    request_text: str = "",
+):
+    cv_text = extract_cv_text(file)
+    if len(cv_text.strip()) < 20:
+        raise HTTPException(status_code=400, detail="CV content is too short")
+    result = _generate_cv_outputs(cv_text, language=language, request_text=request_text)
+    return {
+        "filename": file.filename or "uploaded_cv",
+        "cv_text": cv_text,
+        "summary": result.get("summary"),
+        "suggestions": result.get("suggestions") or [],
+        "improved_cv_text": result.get("improved_cv_text") or cv_text,
+    }
+
+
+@app.post("/chatbot/cv/generate")
+def chatbot_cv_generate(payload: ChatbotCvActionPayload):
+    text = (payload.cv_text or "").strip()
+    if len(text) < 20:
+        raise HTTPException(status_code=400, detail="CV text is too short")
+    result = _generate_cv_outputs(text, language=(payload.language or "en"), request_text=(payload.request or ""))
+    return result
 
 
 @app.post("/profile/preferences")
@@ -1920,7 +2311,7 @@ def chatbot_message(
     db: Session = Depends(get_db),
 ):
     user = get_optional_current_user(authorization, db)
-    reply = _chatbot_reply(payload.message, user)
+    reply = _chatbot_reply(payload.message, user, db)
     return {"reply": reply}
 
 
@@ -1947,7 +2338,7 @@ def get_matching(authorization: str = Header(default=""), db: Session = Depends(
         .limit(300)
         .all()
     )
-    ranked = sorted((compute_match(job, cv_text, preferences) for job in jobs), key=lambda row: row["score"], reverse=True)
+    ranked = sorted((compute_match(job, cv_text, preferences) for job in jobs), key=_rank_key, reverse=True)
     return {
         "items": ranked[:10],
         "cv_status": get_cv_status(user),

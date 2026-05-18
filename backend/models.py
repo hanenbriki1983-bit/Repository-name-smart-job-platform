@@ -12,9 +12,14 @@ class User(Base):
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String(120), nullable=False)
     email = Column(String(255), unique=True, index=True, nullable=False)
+    phone = Column(String(40), nullable=True)
     password_hash = Column(String(255), nullable=False)
     cv_filename = Column(String(255), nullable=True)
     cv_text = Column(Text, nullable=True)
+    cv_candidate_name = Column(String(160), nullable=True)
+    cv_skills_csv = Column(Text, nullable=True)
+    cv_experience_summary = Column(Text, nullable=True)
+    cv_preferred_keywords_csv = Column(Text, nullable=True)
     preferred_country = Column(String(120), nullable=True)
     preferred_city = Column(String(120), nullable=True)
     preferred_job_title = Column(String(160), nullable=True)
@@ -43,6 +48,9 @@ class Job(Base):
     apply_url = Column(String(600), nullable=True)
     skills_csv = Column(Text, nullable=True)
     description = Column(Text, nullable=True)
+    company_logo_url = Column(String(600), nullable=True)
+    posted_date = Column(DateTime, nullable=True)
+    last_updated = Column(DateTime, default=datetime.utcnow, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 
     applications = relationship("Application", back_populates="job")
@@ -70,3 +78,14 @@ class AuthToken(Base):
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 
     user = relationship("User", back_populates="auth_tokens")
+
+
+class PasswordResetToken(Base):
+    __tablename__ = "password_reset_tokens"
+
+    id = Column(Integer, primary_key=True, index=True)
+    token_hash = Column(String(255), unique=True, index=True, nullable=False)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    expires_at = Column(DateTime, nullable=False)
+    used_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
