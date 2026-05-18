@@ -259,6 +259,7 @@ GERMAN_CITY_COORDS = {
 _GEOCODE_CACHE: dict[str, tuple[float, float] | None] = {}
 _LAST_GEOCODE_TS = 0.0
 _AUTO_REFRESH_THREAD_STARTED = False
+_CHAT_LANG_PREFS: dict[str, str] = {}
 
 RELATED_JOB_TITLES = {
     "nurse": ["nurse", "pflegefachkraft", "pflegehelfer", "krankenschwester", "altenpfleger", "gesundheits und krankenpfleger"],
@@ -902,13 +903,13 @@ def _chatbot_reply(message: str, user: User | None = None, db: Session | None = 
 
     def _detect_requested_reply_lang(lowered_text: str, default_lang: str) -> str:
         wants_ar = any(k in lowered_text for k in [
-            "in arabic", "arabic", "بالعربي", "بالعربي", "arabisch", "auf arabisch", "translate to arabic", "explain in arabic",
+            "in arabic", "arabic", "speak in arabic", "reply in arabic", "بالعربي", "بالعربي", "arabisch", "auf arabisch", "translate to arabic", "explain in arabic",
         ])
         wants_de = any(k in lowered_text for k in [
-            "in german", "auf deutsch", "auf deutsch bitte", "deutsch", "translate to german", "explain in german",
+            "in german", "speak in german", "reply in german", "auf deutsch", "auf deutsch bitte", "deutsch", "translate to german", "explain in german",
         ])
         wants_en = any(k in lowered_text for k in [
-            "in english", "english please", "auf englisch", "translate to english", "explain in english", "بالانجليزي", "بالإنجليزي",
+            "in english", "speak in english", "reply in english", "english please", "auf englisch", "translate to english", "explain in english", "بالانجليزي", "بالإنجليزي",
         ])
         if wants_ar:
             return "ar"
@@ -917,6 +918,17 @@ def _chatbot_reply(message: str, user: User | None = None, db: Session | None = 
         if wants_en:
             return "en"
         return default_lang
+
+    def _is_career_plan_request(lowered_text: str) -> bool:
+        if any(k in lowered_text for k in [
+            "career plan", "skills do i need", "how can i become", "roadmap",
+            "karriereplan", "welche skills", "wie werde ich",
+            "خطة مهنية", "ما المهارات", "كيف أصبح",
+        ]):
+            return True
+        return bool(
+            re.search(r"\b(30\s*/\s*60\s*/\s*90|30-60-90|30 60 90|90[-\s‑]?day|90[-\s‑]?tage|90[-\s‑]?يوم)\b", lowered_text)
+        )
 
     def _intent(lowered_text: str) -> str:
         if any(k in lowered_text for k in [
@@ -955,7 +967,12 @@ def _chatbot_reply(message: str, user: User | None = None, db: Session | None = 
     input_lang = _detect_lang(text)
     api_key = (os.getenv("OPENAI_API_KEY") or "").strip()
     lower = text.lower()
-    lang = _detect_requested_reply_lang(lower, input_lang)
+    requested_lang = _detect_requested_reply_lang(lower, "")
+    user_key = f"user:{user.id}" if user else "anon"
+    if requested_lang in {"en", "de", "ar"}:
+        _CHAT_LANG_PREFS[user_key] = requested_lang
+    sticky_lang = _CHAT_LANG_PREFS.get(user_key)
+    lang = sticky_lang or (requested_lang if requested_lang in {"en", "de", "ar"} else input_lang)
     prefs = get_preferences(user) if user else {}
     pref_title = (prefs.get("job_title") or "").strip()
     pref_city = (prefs.get("city") or "").strip()
@@ -963,7 +980,7 @@ def _chatbot_reply(message: str, user: User | None = None, db: Session | None = 
     cv_name = (user.cv_candidate_name or user.name or "").strip() if user else ""
     cv_skills = [item.strip() for item in (user.cv_skills_csv or "").split(",") if item.strip()] if user else []
     cv_keywords = [item.strip() for item in (user.cv_preferred_keywords_csv or "").split(",") if item.strip()] if user else []
-    intent = _intent(lower)
+    intent = "career_plan" if _is_career_plan_request(lower) else _intent(lower)
     role_match = re.search(r"(as|als|als eine|als ein|wie)\s+([a-zA-Z\u0600-\u06FF\s\-]{3,40})", text, flags=re.IGNORECASE)
     role_from_text = (role_match.group(2).strip() if role_match else "")
     role_need_match = re.search(r"(for|für|fur|in)\s+([a-zA-Z\u0600-\u06FFäöüÄÖÜß\s\-]{3,50})\s+jobs?", text, flags=re.IGNORECASE)
