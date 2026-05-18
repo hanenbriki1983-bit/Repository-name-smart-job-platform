@@ -36,7 +36,15 @@ from job_fetcher import (
     get_last_fetch_diagnostics,
     suggest_job_titles,
 )
-from models import Application, AuthToken, Job, PasswordResetToken, User
+from models import (
+    Application,
+    AuthToken,
+    EmailVerificationToken,
+    Job,
+    PasswordResetToken,
+    SavedSearch,
+    User,
+)
 
 ENV_PATH = Path(__file__).resolve().parent / ".env"
 load_dotenv(dotenv_path=ENV_PATH, override=True)
@@ -161,6 +169,19 @@ class ChatbotCvActionPayload(BaseModel):
     cv_text: str
     language: str | None = None
     request: str | None = None
+
+
+class SavedSearchPayload(BaseModel):
+    name: str
+    search_text: str | None = None
+    country: str | None = None
+    city: str | None = None
+    job_title: str | None = None
+    work_mode: str | None = None
+    job_type: str | None = None
+    experience_level: str | None = None
+    radius_km: int | None = 20
+    email_notifications_enabled: bool = False
 
 ALL_VALUES = {"all", "any", "*", "all countries", "all cities"}
 PLACEHOLDER_VALUES = {"string", "null", "none", "undefined", "n/a", "-"}
@@ -1311,6 +1332,33 @@ def _send_reset_email(target_email: str, reset_link: str) -> tuple[bool, str]:
         return False, "Email delivery failed safely. Please contact support or try again later."
 
 
+def _send_basic_email(target_email: str, subject: str, body: str) -> tuple[bool, str]:
+    if not _is_email_configured():
+        return False, "Email provider not configured."
+    smtp_host = (os.getenv("SMTP_HOST") or "").strip()
+    smtp_port = int((os.getenv("SMTP_PORT") or "587").strip() or "587")
+    smtp_user = (os.getenv("SMTP_USER") or "").strip()
+    smtp_password = (os.getenv("SMTP_PASSWORD") or "").strip()
+    smtp_from = (os.getenv("SMTP_FROM") or "").strip()
+    use_tls = (os.getenv("SMTP_USE_TLS") or "1").strip().lower() in {"1", "true", "yes", "on"}
+    msg = EmailMessage()
+    msg["Subject"] = subject
+    msg["From"] = smtp_from
+    msg["To"] = target_email
+    msg.set_content(body)
+    try:
+        with smtplib.SMTP(smtp_host, smtp_port, timeout=20) as server:
+            if use_tls:
+                server.starttls()
+            if smtp_user:
+                server.login(smtp_user, smtp_password)
+            server.send_message(msg)
+        return True, "sent"
+    except Exception as exc:
+        logger.warning("email_send_failed error=%s", exc)
+        return False, "failed"
+
+
 def _generate_cv_outputs(cv_text: str, language: str = "en", request_text: str = "") -> dict:
     text = (cv_text or "").strip()
     lang = (language or "en").strip().lower()
@@ -1579,12 +1627,60 @@ def _refresh_jobs_for_all_users_once() -> dict[str, int]:
     return {"scanned": scanned, "refreshed": refreshed, "failed": failed}
 
 
+def _run_saved_search_notifications_once() -> dict[str, int]:
+    scanned = 0
+    sent = 0
+    db = SessionLocal()
+    try:
+        rows = db.query(SavedSearch).filter(SavedSearch.email_notifications_enabled == 1).all()
+        for search in rows:
+            scanned += 1
+            user = db.query(User).filter(User.id == search.user_id).first()
+            if not user or not user.email or int(user.email_verified or 0) != 1:
+                continue
+            if int(user.email_notifications_enabled or 0) != 1:
+                continue
+            q = db.query(Job).filter(Job.source.in_(active_job_sources()))
+            if (search.country or "").strip():
+                q = q.filter((Job.country.ilike(f"%{search.country}%")) | (Job.location.ilike(f"%{search.country}%")))
+            if (search.city or "").strip():
+                q = q.filter((Job.city.ilike(f"%{search.city}%")) | (Job.location.ilike(f"%{search.city}%")))
+            if (search.job_title or "").strip():
+                q = q.filter(Job.title.ilike(f"%{search.job_title}%"))
+            since = search.last_notified_at or (datetime.utcnow() - timedelta(days=1))
+            matches = (
+                q.filter(Job.last_updated >= since)
+                .order_by(Job.last_updated.desc())
+                .limit(8)
+                .all()
+            )
+            if not matches:
+                continue
+            lines = [f"- {job.title} at {job.company} ({job.city or job.location})" for job in matches]
+            body = (
+                f"Hi {user.name},\n\n"
+                f"We found {len(matches)} new job matches for your saved search '{search.name}'.\n\n"
+                + "\n".join(lines)
+                + "\n\nYou can open Smart Job Platform to review and apply."
+            )
+            ok, _ = _send_basic_email(user.email, f"New job matches: {search.name}", body)
+            if ok:
+                search.last_notified_at = datetime.utcnow()
+                db.add(search)
+                sent += 1
+        db.commit()
+    finally:
+        db.close()
+    return {"scanned": scanned, "sent": sent}
+
+
 def _auto_refresh_loop() -> None:
     interval_seconds = max(86400, int((os.getenv("AUTO_REFRESH_INTERVAL_SECONDS") or "86400").strip() or "86400"))
     run_on_start = (os.getenv("AUTO_REFRESH_RUN_ON_START") or "1").strip().lower() in {"1", "true", "yes", "on"}
     logger.info("auto_refresh_loop started interval_seconds=%s run_on_start=%s", interval_seconds, run_on_start)
     if run_on_start:
         stats = _refresh_jobs_for_all_users_once()
+        _run_saved_search_notifications_once()
         _record_refresh_log(stats)
         logger.info(
             "auto_refresh_once scanned=%s refreshed=%s failed=%s",
@@ -1595,6 +1691,7 @@ def _auto_refresh_loop() -> None:
     while True:
         time.sleep(interval_seconds)
         stats = _refresh_jobs_for_all_users_once()
+        _run_saved_search_notifications_once()
         _record_refresh_log(stats)
         logger.info(
             "auto_refresh_once scanned=%s refreshed=%s failed=%s",
@@ -2087,6 +2184,8 @@ def me(authorization: str = Header(default=""), db: Session = Depends(get_db)):
         "name": user.name,
         "email": user.email,
         "phone": user.phone,
+        "email_verified": bool(int(user.email_verified or 0)),
+        "email_notifications_enabled": bool(int(user.email_notifications_enabled or 0)),
         "cv_status": get_cv_status(user),
         "preferences": get_preferences(user),
     }
@@ -2109,13 +2208,136 @@ def update_profile_settings(
         user.email = next_email
 
     user.phone = next_phone[:40] or None
+    if payload.email is not None and next_email and next_email != user.email:
+        user.email_verified = 0
     db.add(user)
     db.commit()
     return {
         "message": "Settings saved.",
-        "user": {"id": user.id, "name": user.name, "email": user.email, "phone": user.phone},
+        "user": {
+            "id": user.id,
+            "name": user.name,
+            "email": user.email,
+            "phone": user.phone,
+            "email_verified": bool(int(user.email_verified or 0)),
+            "email_notifications_enabled": bool(int(user.email_notifications_enabled or 0)),
+        },
         "sms_reset_configured": bool((os.getenv("SMS_PROVIDER_API_KEY") or "").strip()),
     }
+
+
+@app.post("/auth/email-verification/request")
+def request_email_verification(authorization: str = Header(default=""), db: Session = Depends(get_db)):
+    user = get_current_user(authorization, db)
+    raw_token = secrets.token_urlsafe(32)
+    token_hash = hashlib.sha256(raw_token.encode("utf-8")).hexdigest()
+    row = EmailVerificationToken(
+        token_hash=token_hash,
+        user_id=user.id,
+        expires_at=datetime.utcnow() + timedelta(hours=24),
+    )
+    db.add(row)
+    db.commit()
+
+    frontend_base = (os.getenv("FRONTEND_BASE_URL") or "http://127.0.0.1:5173").strip()
+    verify_link = f"{frontend_base.rstrip('/')}/settings?verify_email_token={raw_token}"
+    ok, _ = _send_basic_email(
+        user.email,
+        "Verify your Smart Job Platform email",
+        f"Hi {user.name},\n\nVerify your email by opening:\n{verify_link}\n",
+    )
+    if ok:
+        return {"message": "Verification email sent."}
+    return {"message": "Email provider is not configured. Development verification link generated.", "dev_verify_link": verify_link}
+
+
+@app.post("/auth/email-verification/confirm")
+def confirm_email_verification(token: str, authorization: str = Header(default=""), db: Session = Depends(get_db)):
+    user = get_current_user(authorization, db)
+    raw = (token or "").strip()
+    token_hash = hashlib.sha256(raw.encode("utf-8")).hexdigest()
+    row = (
+        db.query(EmailVerificationToken)
+        .filter(
+            EmailVerificationToken.token_hash == token_hash,
+            EmailVerificationToken.user_id == user.id,
+        )
+        .first()
+    )
+    if not row or row.used_at or row.expires_at < datetime.utcnow():
+        raise HTTPException(status_code=400, detail="Verification token is invalid or expired")
+    row.used_at = datetime.utcnow()
+    user.email_verified = 1
+    db.add(row)
+    db.add(user)
+    db.commit()
+    return {"message": "Email verified successfully."}
+
+
+@app.post("/profile/email-notifications")
+def set_email_notifications(
+    enabled: bool,
+    authorization: str = Header(default=""),
+    db: Session = Depends(get_db),
+):
+    user = get_current_user(authorization, db)
+    if enabled and int(user.email_verified or 0) != 1:
+        raise HTTPException(status_code=400, detail="Verify your email first.")
+    user.email_notifications_enabled = 1 if enabled else 0
+    db.add(user)
+    db.commit()
+    return {"message": "Email notifications updated.", "enabled": bool(int(user.email_notifications_enabled or 0))}
+
+
+@app.post("/saved-searches")
+def create_saved_search(
+    payload: SavedSearchPayload,
+    authorization: str = Header(default=""),
+    db: Session = Depends(get_db),
+):
+    user = get_current_user(authorization, db)
+    search = SavedSearch(
+        user_id=user.id,
+        name=(payload.name or "My search")[:160],
+        search_text=(payload.search_text or "")[:255] or None,
+        country=(payload.country or "")[:120] or None,
+        city=(payload.city or "")[:120] or None,
+        job_title=(payload.job_title or "")[:160] or None,
+        work_mode=(payload.work_mode or "")[:40] or None,
+        job_type=(payload.job_type or "")[:40] or None,
+        experience_level=(payload.experience_level or "")[:40] or None,
+        radius_km=int(payload.radius_km or 20),
+        email_notifications_enabled=1 if bool(payload.email_notifications_enabled) else 0,
+    )
+    if search.email_notifications_enabled and (int(user.email_verified or 0) != 1 or int(user.email_notifications_enabled or 0) != 1):
+        search.email_notifications_enabled = 0
+    db.add(search)
+    db.commit()
+    db.refresh(search)
+    return {"message": "Search saved.", "item": {"id": search.id, "name": search.name, "email_notifications_enabled": bool(search.email_notifications_enabled)}}
+
+
+@app.get("/saved-searches")
+def list_saved_searches(authorization: str = Header(default=""), db: Session = Depends(get_db)):
+    user = get_current_user(authorization, db)
+    rows = db.query(SavedSearch).filter(SavedSearch.user_id == user.id).order_by(SavedSearch.id.desc()).all()
+    return [
+        {
+            "id": row.id,
+            "name": row.name,
+            "search_text": row.search_text,
+            "country": row.country,
+            "city": row.city,
+            "job_title": row.job_title,
+            "work_mode": row.work_mode,
+            "job_type": row.job_type,
+            "experience_level": row.experience_level,
+            "radius_km": row.radius_km,
+            "email_notifications_enabled": bool(row.email_notifications_enabled),
+            "last_notified_at": row.last_notified_at.isoformat() if row.last_notified_at else None,
+        }
+        for row in rows
+    ]
 
 
 @app.post("/auth/password-reset/request")

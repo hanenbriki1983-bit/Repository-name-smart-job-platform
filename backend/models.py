@@ -13,6 +13,8 @@ class User(Base):
     name = Column(String(120), nullable=False)
     email = Column(String(255), unique=True, index=True, nullable=False)
     phone = Column(String(40), nullable=True)
+    email_verified = Column(Integer, default=0, nullable=False)
+    email_notifications_enabled = Column(Integer, default=0, nullable=False)
     password_hash = Column(String(255), nullable=False)
     cv_filename = Column(String(255), nullable=True)
     cv_text = Column(Text, nullable=True)
@@ -88,4 +90,34 @@ class PasswordResetToken(Base):
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     expires_at = Column(DateTime, nullable=False)
     used_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+
+class EmailVerificationToken(Base):
+    __tablename__ = "email_verification_tokens"
+
+    id = Column(Integer, primary_key=True, index=True)
+    token_hash = Column(String(255), unique=True, index=True, nullable=False)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    expires_at = Column(DateTime, nullable=False)
+    used_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+
+class SavedSearch(Base):
+    __tablename__ = "saved_searches"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    name = Column(String(160), nullable=False)
+    search_text = Column(String(255), nullable=True)
+    country = Column(String(120), nullable=True)
+    city = Column(String(120), nullable=True)
+    job_title = Column(String(160), nullable=True)
+    work_mode = Column(String(40), nullable=True)
+    job_type = Column(String(40), nullable=True)
+    experience_level = Column(String(40), nullable=True)
+    radius_km = Column(Integer, nullable=False, default=20)
+    email_notifications_enabled = Column(Integer, default=0, nullable=False)
+    last_notified_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
