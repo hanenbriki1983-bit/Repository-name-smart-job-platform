@@ -1894,6 +1894,13 @@ function ChatbotPage({ token, lang, compact = false }) {
   const [voiceEnabled, setVoiceEnabled] = useState(false)
   const [listening, setListening] = useState(false)
   const [speakReplies, setSpeakReplies] = useState(false)
+  const [cvFile, setCvFile] = useState(null)
+  const [cvText, setCvText] = useState('')
+  const [cvSummary, setCvSummary] = useState('')
+  const [cvSuggestions, setCvSuggestions] = useState([])
+  const [improvedCvText, setImprovedCvText] = useState('')
+  const [cvBusy, setCvBusy] = useState(false)
+  const [cvStatus, setCvStatus] = useState('')
 
   useEffect(() => {
     const loadCvGreeting = async () => {
@@ -1975,6 +1982,100 @@ function ChatbotPage({ token, lang, compact = false }) {
     recog.start()
   }
 
+  const analyzeCvInChatbot = async (event) => {
+    event.preventDefault()
+    if (!cvFile) return
+    setCvBusy(true)
+    setCvStatus('')
+    try {
+      const formData = new FormData()
+      formData.append('file', cvFile)
+      formData.append('language', lang)
+      const response = await fetchWithFallback('/chatbot/cv/analyze', { method: 'POST', body: formData })
+      const data = await response.json()
+      if (!response.ok) throw new Error(data.detail || 'CV analyze failed')
+      setCvText(data.cv_text || '')
+      setCvSummary(data.summary || '')
+      setCvSuggestions(Array.isArray(data.suggestions) ? data.suggestions : [])
+      setImprovedCvText(data.improved_cv_text || '')
+      setCvStatus('CV analyzed successfully.')
+    } catch (err) {
+      setCvStatus(err.message || 'CV analyze failed')
+    } finally {
+      setCvBusy(false)
+    }
+  }
+
+  const regenerateImprovedCv = async () => {
+    if (!cvText.trim()) return
+    setCvBusy(true)
+    setCvStatus('')
+    try {
+      const response = await fetchWithFallback('/chatbot/cv/generate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          cv_text: cvText,
+          language: lang,
+          request: input || 'Please generate an improved professional CV.',
+        }),
+      })
+      const data = await response.json()
+      if (!response.ok) throw new Error(data.detail || 'CV generation failed')
+      setCvSummary(data.summary || cvSummary)
+      setCvSuggestions(Array.isArray(data.suggestions) ? data.suggestions : cvSuggestions)
+      setImprovedCvText(data.improved_cv_text || improvedCvText)
+      setCvStatus('Improved CV generated.')
+    } catch (err) {
+      setCvStatus(err.message || 'CV generation failed')
+    } finally {
+      setCvBusy(false)
+    }
+  }
+
+  const saveImprovedCvToProfile = async () => {
+    if (!token || !improvedCvText.trim()) return
+    const ok = window.confirm('This will overwrite your profile CV with the improved version. Continue?')
+    if (!ok) return
+    setCvBusy(true)
+    setCvStatus('')
+    try {
+      const response = await fetchWithFallback('/profile/cv/text', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ cv_text: improvedCvText, filename: 'improved_cv.txt' }),
+      })
+      const data = await response.json()
+      if (!response.ok) throw new Error(data.detail || 'Save failed')
+      setCvStatus(data.message || 'Saved.')
+    } catch (err) {
+      setCvStatus(err.message || 'Save failed')
+    } finally {
+      setCvBusy(false)
+    }
+  }
+
+  const copyImprovedCv = async () => {
+    if (!improvedCvText.trim()) return
+    try {
+      await navigator.clipboard.writeText(improvedCvText)
+      setCvStatus('Improved CV copied.')
+    } catch {
+      setCvStatus('Could not copy automatically.')
+    }
+  }
+
+  const downloadImprovedCv = () => {
+    if (!improvedCvText.trim()) return
+    const blob = new Blob([improvedCvText], { type: 'text/plain;charset=utf-8' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = 'improved_cv.txt'
+    a.click()
+    URL.revokeObjectURL(url)
+  }
+
   return (
     <section className={`card chatbot ${compact ? 'compact' : ''}`}>
       <h2>{t('chatbot')}</h2>
@@ -2001,6 +2102,39 @@ function ChatbotPage({ token, lang, compact = false }) {
           </div>
         ))}
       </div>
+      <details>
+        <summary>CV tools</summary>
+        <form className="form-grid" onSubmit={analyzeCvInChatbot}>
+          <input type="file" accept=".txt,.pdf,.doc,.docx,.xls,.xlsx" onChange={(e) => setCvFile(e.target.files?.[0] || null)} />
+          <button type="submit" className="btn btn-secondary" disabled={cvBusy || !cvFile}>
+            {cvBusy ? 'Processing...' : 'Upload + Analyze CV'}
+          </button>
+        </form>
+        {cvStatus && <p className="success">{cvStatus}</p>}
+        {cvSummary && <p>{cvSummary}</p>}
+        {cvSuggestions.length > 0 && (
+          <div>
+            {cvSuggestions.map((tip, idx) => <p key={`tip-${idx}`}>- {tip}</p>)}
+          </div>
+        )}
+        {cvText && (
+          <div className="actions">
+            <button type="button" className="btn btn-secondary" onClick={regenerateImprovedCv} disabled={cvBusy}>
+              Generate improved CV ({lang.toUpperCase()})
+            </button>
+          </div>
+        )}
+        {improvedCvText && (
+          <div className="form-grid">
+            <textarea rows={compact ? 8 : 12} value={improvedCvText} onChange={(e) => setImprovedCvText(e.target.value)} />
+            <div className="actions">
+              <button type="button" className="btn btn-secondary" onClick={copyImprovedCv}>Copy</button>
+              <button type="button" className="btn btn-secondary" onClick={downloadImprovedCv}>Download</button>
+              {token && <button type="button" className="btn" onClick={saveImprovedCvToProfile}>Save to profile CV</button>}
+            </div>
+          </div>
+        )}
+      </details>
       <form className="chat-input" onSubmit={sendMessage}>
         <input
           type="text"
