@@ -48,6 +48,7 @@ class Job(Base):
     work_mode = Column(String(40), nullable=True)
     job_type = Column(String(40), nullable=True)
     apply_url = Column(String(600), nullable=True)
+    company_website_url = Column(String(600), nullable=True)
     skills_csv = Column(Text, nullable=True)
     description = Column(Text, nullable=True)
     company_logo_url = Column(String(600), nullable=True)

@@ -183,6 +183,12 @@ class SavedSearchPayload(BaseModel):
     radius_km: int | None = 20
     email_notifications_enabled: bool = False
 
+
+class CareerPlanPayload(BaseModel):
+    target_role: str | None = None
+    target_city: str | None = None
+    language: str | None = None
+
 ALL_VALUES = {"all", "any", "*", "all countries", "all cities"}
 PLACEHOLDER_VALUES = {"string", "null", "none", "undefined", "n/a", "-"}
 FRESH_DAYS = 7
@@ -256,6 +262,18 @@ _AUTO_REFRESH_THREAD_STARTED = False
 
 RELATED_JOB_TITLES = {
     "nurse": ["nurse", "pflegefachkraft", "pflegehelfer", "krankenschwester", "altenpfleger", "gesundheits und krankenpfleger"],
+}
+
+JOB_ROLE_SYNONYMS = {
+    "cashier": {
+        "cashier", "retail assistant", "sales assistant", "verkaufer", "verkäufer", "kassierer", "einzelhandel", "shop assistant",
+    },
+    "nurse": {
+        "nurse", "pflegefachkraft", "krankenschwester", "pflegehelfer", "krankenpfleger", "altenpfleger",
+    },
+    "driver": {
+        "driver", "fahrer", "delivery driver", "lieferfahrer", "chauffeur", "kurierfahrer",
+    },
 }
 
 
@@ -386,6 +404,49 @@ def _title_filter_terms(raw_title: str) -> list[str]:
     if significant:
         return list(dict.fromkeys(significant))
     return [text]
+
+
+def _norm_text(value: str) -> str:
+    text = (value or "").strip().lower()
+    return text.replace("ü", "u").replace("ö", "o").replace("ä", "a").replace("ß", "ss")
+
+
+def _expanded_relevance_terms(query_text: str) -> set[str]:
+    q = _norm_text(query_text)
+    if not q:
+        return set()
+    tokens = {part.strip() for part in re.split(r"[\s,/|-]+", q) if part.strip()}
+    expanded = set(tokens)
+    expanded.add(q)
+    for role_key, synonyms in JOB_ROLE_SYNONYMS.items():
+        role_norm = _norm_text(role_key)
+        synonym_norms = {_norm_text(item) for item in synonyms}
+        if role_norm in q or any(item in q for item in synonym_norms):
+            expanded.update(synonym_norms)
+            expanded.add(role_norm)
+    return {term for term in expanded if len(term) >= 3}
+
+
+def _job_is_relevant(job: Job, query_text: str) -> bool:
+    terms = _expanded_relevance_terms(query_text)
+    if not terms:
+        return True
+    haystack = _norm_text(
+        " ".join(
+            [
+                job.title or "",
+                job.description or "",
+                job.job_type or "",
+                job.work_mode or "",
+                job.company or "",
+            ]
+        )
+    )
+    title_only = _norm_text(job.title or "")
+    # Require at least one strong synonym hit in title OR two hits overall.
+    title_hits = sum(1 for term in terms if term in title_only)
+    body_hits = sum(1 for term in terms if term in haystack)
+    return title_hits >= 1 or body_hits >= 2
 
 
 SKILL_KEYWORDS = {
@@ -615,13 +676,29 @@ def upsert_fetched_jobs(db: Session, jobs: list[dict]) -> int:
         existing.work_mode = (row.get("work_mode") or "")[:40] or None
         existing.job_type = (row.get("job_type") or "")[:40] or None
         existing.apply_url = apply_url[:600] or None
+        website_url = (row.get("company_website_url") or "").strip()
+        if website_url and not (website_url.startswith("http://") or website_url.startswith("https://")):
+            website_url = ""
+        if not website_url and apply_url:
+            try:
+                host = (urlparse(apply_url).hostname or "").strip().lower()
+                if host.startswith("www."):
+                    host = host[4:]
+                if host:
+                    website_url = f"https://{host}"
+            except Exception:
+                website_url = ""
+        existing.company_website_url = website_url[:600] or None
         existing.description = (row.get("description") or "")[:4000] or None
         existing.skills_csv = (row.get("skills_csv") or "")[:1200] or None
         existing.last_updated = datetime.utcnow()
         logo_url = (row.get("company_logo_url") or "").strip()
-        if not logo_url and apply_url:
+        if logo_url and not (logo_url.startswith("http://") or logo_url.startswith("https://")):
+            logo_url = ""
+        if not logo_url:
             try:
-                host = (urlparse(apply_url).hostname or "").strip().lower()
+                base = existing.company_website_url or apply_url
+                host = (urlparse(base).hostname or "").strip().lower()
                 if host.startswith("www."):
                     host = host[4:]
                 if host:
@@ -842,6 +919,12 @@ def _chatbot_reply(message: str, user: User | None = None, db: Session | None = 
         return default_lang
 
     def _intent(lowered_text: str) -> str:
+        if any(k in lowered_text for k in [
+            "career plan", "90-day", "30/60/90", "skills do i need", "how can i become",
+            "karriereplan", "90 tage", "welche skills", "wie werde ich",
+            "خطة مهنية", "90 يوم", "ما المهارات", "كيف أصبح",
+        ]):
+            return "career_plan"
         if any(k in lowered_text for k in ["who are you", "what are you", "who r u", "من انت", "مين انت", "wer bist du"]):
             return "intro"
         if any(k in lowered_text for k in ["cv", "resume", "lebenslauf", "السيرة", "cv "]):
@@ -883,8 +966,49 @@ def _chatbot_reply(message: str, user: User | None = None, db: Session | None = 
     intent = _intent(lower)
     role_match = re.search(r"(as|als|als eine|als ein|wie)\s+([a-zA-Z\u0600-\u06FF\s\-]{3,40})", text, flags=re.IGNORECASE)
     role_from_text = (role_match.group(2).strip() if role_match else "")
+    role_need_match = re.search(r"(for|für|fur|in)\s+([a-zA-Z\u0600-\u06FFäöüÄÖÜß\s\-]{3,50})\s+jobs?", text, flags=re.IGNORECASE)
+    role_need_from_text = (role_need_match.group(2).strip() if role_need_match else "")
+    become_match = re.search(r"(become|werde ich|wie werde ich|اصبح|أصبح)\s+([a-zA-Z\u0600-\u06FFäöüÄÖÜß\s\-]{3,50})", text, flags=re.IGNORECASE)
+    become_role = (become_match.group(2).strip() if become_match else "")
     city_match = re.search(r"\b(in|near|bei|um|nähe|في|قرب)\s+([a-zA-Z\u0600-\u06FFäöüÄÖÜß\s\-]{2,40})", text, flags=re.IGNORECASE)
     city_from_text = (city_match.group(2).strip() if city_match else "")
+    inferred_role = role_from_text or role_need_from_text or become_role or pref_title or "target role"
+    inferred_city = city_from_text or pref_city or pref_country or "preferred location"
+
+    if intent == "career_plan":
+        cv_base = (user.cv_text or "").strip() if user else ""
+        if len(cv_base) < 20:
+            cv_base = (
+                f"Target role: {inferred_role}. Preferred location: {inferred_city}. "
+                f"Known skills: {', '.join(cv_skills[:10]) if cv_skills else 'not specified'}."
+            )
+        plan = _build_career_plan(cv_base, inferred_role, inferred_city, language=lang)
+        if lang == "de":
+            return (
+                f"Klar. Hier ist dein realistischer 90-Tage-Plan für {inferred_role} in {inferred_city}.\n\n"
+                f"Fokus: {plan.get('summary')}\n"
+                f"Top-Skill-Gaps: {' | '.join((plan.get('gaps') or [])[:3])}\n"
+                f"30 Tage: {'; '.join((plan.get('plan_30') or [])[:3])}\n"
+                f"60 Tage: {'; '.join((plan.get('plan_60') or [])[:3])}\n"
+                f"90 Tage: {'; '.join((plan.get('plan_90') or [])[:3])}"
+            )
+        if lang == "ar":
+            return (
+                f"أكيد. هذه خطة مهنية واقعية لمدة 90 يومًا لوظيفة {inferred_role} في {inferred_city}.\n\n"
+                f"التركيز: {plan.get('summary')}\n"
+                f"أهم الفجوات: {' | '.join((plan.get('gaps') or [])[:3])}\n"
+                f"30 يوم: {'؛ '.join((plan.get('plan_30') or [])[:3])}\n"
+                f"60 يوم: {'؛ '.join((plan.get('plan_60') or [])[:3])}\n"
+                f"90 يوم: {'؛ '.join((plan.get('plan_90') or [])[:3])}"
+            )
+        return (
+            f"Absolutely. Here’s a practical 90-day career plan for {inferred_role} in {inferred_city}.\n\n"
+            f"Focus: {plan.get('summary')}\n"
+            f"Top skill gaps: {' | '.join((plan.get('gaps') or [])[:3])}\n"
+            f"30 days: {'; '.join((plan.get('plan_30') or [])[:3])}\n"
+            f"60 days: {'; '.join((plan.get('plan_60') or [])[:3])}\n"
+            f"90 days: {'; '.join((plan.get('plan_90') or [])[:3])}"
+        )
 
     def _rule_based_reply() -> str:
         focus_en = pref_title or "your target role"
@@ -1205,15 +1329,17 @@ def compute_match(job: Job, cv_text: str, preferences: dict | None = None) -> di
     distance_label = f"{distance_km} km away" if distance_km is not None else None
     coords = _job_coordinates(job)
     company_logo_url = (job.company_logo_url or "").strip() or None
-    if not company_logo_url and job.apply_url:
+    if not company_logo_url and (job.company_website_url or job.apply_url):
         try:
-            host = (urlparse(job.apply_url).hostname or "").strip().lower()
+            base = job.company_website_url or job.apply_url
+            host = (urlparse(base).hostname or "").strip().lower()
             if host:
                 if host.startswith("www."):
                     host = host[4:]
                 company_logo_url = f"https://logo.clearbit.com/{host}"
         except Exception:
             company_logo_url = None
+    logo_click_url = (job.company_website_url or job.apply_url or "").strip() or None
 
     return {
         "job_id": job.id,
@@ -1227,6 +1353,8 @@ def compute_match(job: Job, cv_text: str, preferences: dict | None = None) -> di
         "work_mode": job.work_mode,
         "job_type": job.job_type,
         "apply_url": job.apply_url,
+        "company_website_url": job.company_website_url,
+        "logo_click_url": logo_click_url,
         "company_logo_url": company_logo_url,
         "company_initials": "".join([part[0] for part in (job.company or "").split()[:2]]).upper() or "CO",
         "posted_days": posted_days,
@@ -1362,6 +1490,13 @@ def _send_basic_email(target_email: str, subject: str, body: str) -> tuple[bool,
 def _generate_cv_outputs(cv_text: str, language: str = "en", request_text: str = "") -> dict:
     text = (cv_text or "").strip()
     lang = (language or "en").strip().lower()
+    request_lower = (request_text or "").strip().lower()
+    if any(token in request_lower for token in ["german", "deutsch", "auf deutsch", "ins deutsche"]):
+        lang = "de"
+    elif any(token in request_lower for token in ["english", "englisch", "in english", "auf englisch"]):
+        lang = "en"
+    elif any(token in request_lower for token in ["arabic", "arabisch", "بالعربي", "بالعربية", "عربي"]):
+        lang = "ar"
     if lang not in {"en", "de", "ar"}:
         lang = "en"
     profile = _extract_cv_profile(text)
@@ -1374,33 +1509,50 @@ def _generate_cv_outputs(cv_text: str, language: str = "en", request_text: str =
         "en": {
             "summary": f"{name} profile summary: {exp_summary or 'General professional background'} Skills: {', '.join(skills[:8]) or 'Not clearly listed'}.",
             "tips": [
-                "Add a strong headline with target role and years of experience.",
-                "Use measurable achievements in each experience bullet.",
-                "Group skills into technical/domain/language sections.",
+                "Fix grammar and verb tense consistency across all bullet points.",
+                "Use measurable achievements with realistic metrics where available.",
+                "Add ATS-friendly keywords that match target job descriptions naturally.",
+                "Use clear sections: Summary, Skills, Experience, Education, Certifications.",
             ],
         },
         "de": {
             "summary": f"Profil-Zusammenfassung von {name}: {exp_summary or 'Allgemeiner beruflicher Hintergrund'} Skills: {', '.join(skills[:8]) or 'Nicht klar aufgeführt'}.",
             "tips": [
-                "Füge eine klare Überschrift mit Zielrolle und Berufserfahrung hinzu.",
-                "Nutze messbare Erfolge in jedem Erfahrungsabschnitt.",
-                "Strukturiere Skills in technische/fachliche/sprachliche Gruppen.",
+                "Korrigiere Grammatik und Zeitformen in allen Stichpunkten.",
+                "Formuliere realistische, messbare Ergebnisse pro Erfahrung.",
+                "Ergänze ATS-relevante Schlüsselwörter passend zur Zielstelle.",
+                "Nutze klare Struktur: Profil, Skills, Erfahrung, Ausbildung, Zertifikate.",
             ],
         },
         "ar": {
             "summary": f"ملخص ملف {name}: {exp_summary or 'خلفية مهنية عامة'} المهارات: {', '.join(skills[:8]) or 'غير واضحة بشكل كافٍ'}.",
             "tips": [
-                "أضف عنوانًا مهنيًا واضحًا مع المسمى المستهدف وسنوات الخبرة.",
-                "اكتب إنجازات قابلة للقياس تحت كل خبرة.",
-                "قسّم المهارات إلى فئات تقنية ومجالية ولغوية.",
+                "صحّح القواعد والإملاء وتوحيد زمن الأفعال في كامل السيرة.",
+                "استخدم صياغة مهنية أقوى مع إنجازات واقعية قابلة للقياس.",
+                "أضف كلمات مفتاحية مناسبة لأنظمة ATS بشكل طبيعي.",
+                "نظّم السيرة إلى: ملخص، مهارات، خبرات، تعليم، شهادات.",
             ],
         },
     }
 
     if not key:
+        action_hint = "professional_cv"
+        if any(token in request_lower for token in ["fix grammar", "grammar", "spelling", "correct grammar", "korrig", "إملاء", "قواعد"]):
+            action_hint = "grammar"
+        elif any(token in request_lower for token in ["rewrite", "experience", "better", "stronger", "neu formul", "إعادة صياغة"]):
+            action_hint = "rewrite_experience"
+        elif any(token in request_lower for token in ["translate", "übersetz", "ترجم"]):
+            action_hint = "translate"
+
+        summary_prefix = {
+            "grammar": "Grammar/spelling-focused review:",
+            "rewrite_experience": "Experience rewrite-focused review:",
+            "translate": "Translation-focused review:",
+            "professional_cv": "Professional CV improvement review:",
+        }.get(action_hint, "Professional CV improvement review:")
         improved = (
             f"{name}\n\n"
-            f"Professional Summary\n{fallback[lang]['summary']}\n\n"
+            f"Professional Summary\n{summary_prefix} {fallback[lang]['summary']}\n\n"
             "Core Skills\n- " + ("\n- ".join(skills[:12]) if skills else "Add your most relevant skills here.") + "\n\n"
             "Experience\n- Add role, company, dates, and 3 quantified achievements per role.\n\n"
             "Education\n- Add degree, institution, graduation year.\n"
@@ -1409,11 +1561,19 @@ def _generate_cv_outputs(cv_text: str, language: str = "en", request_text: str =
 
     model = (os.getenv("OPENAI_MODEL") or "gpt-4o-mini").strip()
     prompt = (
-        "You are an expert CV writer. Return strict JSON with keys: summary, suggestions, improved_cv_text. "
-        "summary is 2-4 sentences. suggestions is array of 3-6 concise improvements. "
-        "improved_cv_text is a full professional CV rewrite with headings and bullet points.\n"
-        f"Target language: {lang}. Follow user request if provided.\n"
-        f"User request: {request_text or 'Improve this CV professionally.'}\n"
+        "You are an expert CV assistant for real-world hiring. "
+        "Return strict JSON with keys: summary, suggestions, improved_cv_text. "
+        "summary: 2-4 sentences; suggestions: 4-8 concise points; improved_cv_text: full rewritten CV.\n"
+        "Quality requirements:\n"
+        "- Correct grammar and spelling.\n"
+        "- Improve wording professionally.\n"
+        "- Make CV ATS-friendly with natural keywords and clean sectioning.\n"
+        "- Rewrite weak experience bullets into stronger professional language.\n"
+        "- Keep content realistic: do NOT invent jobs, degrees, certifications, dates, or exaggerated achievements.\n"
+        "- If information is missing, keep placeholders neutral like '[add metric]' rather than fabricating.\n"
+        "- If user asks translation, preserve original meaning and improve language quality.\n"
+        f"Target language: {lang}. Follow request exactly.\n"
+        f"User request: {request_text or 'Make my CV more professional, fix grammar, and improve ATS quality.'}\n"
         f"Original CV:\n{text[:12000]}"
     )
     try:
@@ -1447,6 +1607,128 @@ def _generate_cv_outputs(cv_text: str, language: str = "en", request_text: str =
             "Core Skills\n- " + ("\n- ".join(skills[:12]) if skills else "Add your most relevant skills here.")
         )
         return {"summary": fallback[lang]["summary"], "suggestions": fallback[lang]["tips"], "improved_cv_text": improved}
+
+
+def _build_career_plan(cv_text: str, target_role: str, target_city: str, language: str = "en") -> dict:
+    lang = (language or "en").strip().lower()
+    if lang not in {"en", "de", "ar"}:
+        lang = "en"
+    role = (target_role or "").strip() or "your target role"
+    city = (target_city or "").strip() or "your preferred location"
+    profile = _extract_cv_profile(cv_text or "")
+    skills = profile.get("skills") or []
+    key = (os.getenv("OPENAI_API_KEY") or "").strip()
+
+    fallback = {
+        "en": {
+            "summary": f"Career focus: {role} in {city}.",
+            "gaps": [
+                "Clarify role-specific achievements with measurable outcomes.",
+                "Strengthen ATS keywords for target role descriptions.",
+                "Add one portfolio/project example aligned to the role.",
+            ],
+            "plan_30": [
+                "Refine CV headline and summary for target role.",
+                "Update 3 experience bullets with concrete impact.",
+                "Apply to 15 targeted jobs and track responses.",
+            ],
+            "plan_60": [
+                "Close top 2 skill gaps via short practical projects.",
+                "Practice 10 interview questions using STAR format.",
+                "Network with 10 relevant professionals/recruiters.",
+            ],
+            "plan_90": [
+                "Publish/complete one role-relevant project proof.",
+                "Iterate CV using interview/application feedback.",
+                "Target second-wave applications to best-fit companies.",
+            ],
+        },
+        "de": {
+            "summary": f"Karrierefokus: {role} in {city}.",
+            "gaps": [
+                "Rollenrelevante Erfolge klarer und messbar formulieren.",
+                "ATS-Schlüsselwörter für Zielrolle gezielt ergänzen.",
+                "Ein passendes Projekt/Portfolio-Beispiel hinzufügen.",
+            ],
+            "plan_30": [
+                "CV-Überschrift und Profil auf Zielrolle zuschneiden.",
+                "3 Erfahrungs-Stichpunkte mit konkreter Wirkung verbessern.",
+                "15 passende Stellen bewerben und Rückmeldungen tracken.",
+            ],
+            "plan_60": [
+                "Top-2 Skill-Gaps mit Mini-Projekten schließen.",
+                "10 Interviewfragen im STAR-Format üben.",
+                "Mit 10 relevanten Kontakten/Recruitern vernetzen.",
+            ],
+            "plan_90": [
+                "Ein rollenrelevantes Projekt als Nachweis veröffentlichen.",
+                "CV anhand Bewerbungs-/Interviewfeedback optimieren.",
+                "Zweite Bewerbungsrunde bei Top-Unternehmen starten.",
+            ],
+        },
+        "ar": {
+            "summary": f"التركيز المهني: {role} في {city}.",
+            "gaps": [
+                "توضيح الإنجازات المرتبطة بالدور بصياغة قابلة للقياس.",
+                "تعزيز كلمات ATS المناسبة للوظيفة المستهدفة.",
+                "إضافة مشروع/نماذج أعمال مرتبطة بالدور.",
+            ],
+            "plan_30": [
+                "تحسين عنوان السيرة والملخص ليتوافقا مع الدور المستهدف.",
+                "تطوير 3 نقاط خبرة بأثر مهني واضح وقابل للقياس.",
+                "التقديم على 15 وظيفة مناسبة وتتبع النتائج.",
+            ],
+            "plan_60": [
+                "سد أهم فجوتين مهاريتين عبر مشاريع عملية قصيرة.",
+                "التدرّب على 10 أسئلة مقابلة بطريقة STAR.",
+                "بناء شبكة مع 10 أشخاص/مجندين في نفس المجال.",
+            ],
+            "plan_90": [
+                "إنجاز مشروع قوي يثبت الجاهزية للدور.",
+                "تحديث السيرة بناءً على ملاحظات المقابلات والتقديم.",
+                "إطلاق موجة تقديم ثانية للشركات الأنسب.",
+            ],
+        },
+    }
+    if not key:
+        return fallback[lang]
+
+    model = (os.getenv("OPENAI_MODEL") or "gpt-4o-mini").strip()
+    prompt = (
+        "You are a realistic career coach. Return strict JSON with keys: summary, gaps, plan_30, plan_60, plan_90.\n"
+        "Rules: no fake claims, no exaggeration, practical and specific actions.\n"
+        f"Language: {lang}\nTarget role: {role}\nTarget city: {city}\n"
+        f"Current CV skills: {', '.join(skills[:20])}\nCV text:\n{(cv_text or '')[:10000]}"
+    )
+    try:
+        req = Request(
+            "https://api.openai.com/v1/chat/completions",
+            data=json.dumps(
+                {
+                    "model": model,
+                    "temperature": 0.2,
+                    "max_tokens": 900,
+                    "response_format": {"type": "json_object"},
+                    "messages": [{"role": "user", "content": prompt}],
+                }
+            ).encode("utf-8"),
+            headers={"Content-Type": "application/json", "Authorization": f"Bearer {key}"},
+            method="POST",
+        )
+        with urlopen(req, timeout=35) as response:  # nosec B310
+            data = json.loads(response.read().decode("utf-8"))
+        content = (((data.get("choices") or [{}])[0].get("message") or {}).get("content") or "{}").strip()
+        parsed = json.loads(content)
+        return {
+            "summary": parsed.get("summary") or fallback[lang]["summary"],
+            "gaps": parsed.get("gaps") or fallback[lang]["gaps"],
+            "plan_30": parsed.get("plan_30") or fallback[lang]["plan_30"],
+            "plan_60": parsed.get("plan_60") or fallback[lang]["plan_60"],
+            "plan_90": parsed.get("plan_90") or fallback[lang]["plan_90"],
+        }
+    except Exception as exc:
+        logger.warning("career_plan_failed error=%s", exc)
+        return fallback[lang]
 
 
 def merge_search_preferences(base: dict, payload: JobSearchPayload | None) -> dict:
@@ -1823,6 +2105,9 @@ def get_jobs(db: Session = Depends(get_db)):
             "company": job.company,
             "location": job.location,
             "apply_url": job.apply_url,
+            "company_website_url": job.company_website_url,
+            "logo_click_url": (job.company_website_url or job.apply_url),
+            "company_logo_url": job.company_logo_url,
             "posted_date": (job.posted_date.isoformat() if job.posted_date else None),
             "last_updated": (job.last_updated.isoformat() if job.last_updated else None),
         }
@@ -1841,6 +2126,7 @@ def search_jobs(
     base_preferences = get_preferences(user) if user else {}
     preferences = merge_search_preferences(base_preferences, payload)
     requested_title = (preferences.get("job_title") or "").strip()
+    requested_search_text = (preferences.get("search_text") or "").strip()
     corrected_title = autocorrect_job_title(requested_title) if requested_title else ""
     if corrected_title and corrected_title != requested_title:
         preferences["job_title"] = corrected_title
@@ -1924,6 +2210,7 @@ def search_jobs(
     jobs = run_filtered_query(preferences, radius_km, strict_title=True)
     used_filter_relaxation = False
     title_requested = bool((preferences.get("job_title") or "").strip())
+    relevance_query = (preferences.get("job_title") or preferences.get("search_text") or "").strip()
     if not jobs:
         relaxed_preferences = dict(preferences)
         relaxed_preferences["work_mode"] = ""
@@ -1975,9 +2262,10 @@ def search_jobs(
         global_broader_preferences["experience_level"] = ""
         global_broader_preferences["city"] = ""
         global_broader_preferences["radius_km"] = max(100, radius_km)
-        # Last resort for zero-results: broaden title constraints as well.
-        global_broader_preferences["job_title"] = ""
-        global_broader_preferences["search_text"] = ""
+        # Keep title/search constraints when the user explicitly requested a role.
+        if not title_requested and not requested_search_text:
+            global_broader_preferences["job_title"] = ""
+            global_broader_preferences["search_text"] = ""
         global_broader_jobs = run_filtered_query(global_broader_preferences, max(100, radius_km), strict_title=False)
         if global_broader_jobs:
             jobs = global_broader_jobs
@@ -1995,6 +2283,10 @@ def search_jobs(
         ",".join(sorted({job.source for job in jobs})) if jobs else "-",
         broad_mode,
     )
+    if relevance_query:
+        before = len(jobs)
+        jobs = [job for job in jobs if _job_is_relevant(job, relevance_query)]
+        logger.info("jobs_search strict_relevance_applied query=%s before=%s after=%s", relevance_query, before, len(jobs))
     ranked = sorted((compute_match(job, cv_text, preferences) for job in jobs), key=_rank_key, reverse=True)
     paged_items = ranked[offset : offset + limit]
     for item in paged_items:
@@ -2010,6 +2302,8 @@ def search_jobs(
         message = "Showing broader matches after relaxing filters."
     elif len(paged_items) > 0:
         message = "Real jobs fetched from provider."
+    elif relevance_query:
+        message = "No matching jobs found."
     elif not has_api_keys:
         message = (
             "No fresh matches for this search yet from active free providers. "
@@ -2506,6 +2800,29 @@ def chatbot_cv_generate(payload: ChatbotCvActionPayload):
         raise HTTPException(status_code=400, detail="CV text is too short")
     result = _generate_cv_outputs(text, language=(payload.language or "en"), request_text=(payload.request or ""))
     return result
+
+
+@app.post("/career/plan")
+def career_plan(
+    payload: CareerPlanPayload,
+    authorization: str = Header(default=""),
+    db: Session = Depends(get_db),
+):
+    user = get_current_user(authorization, db)
+    cv_text = (user.cv_text or "").strip()
+    if len(cv_text) < 20:
+        raise HTTPException(status_code=400, detail="Upload your CV first to generate a career plan.")
+    prefs = get_preferences(user)
+    role = (payload.target_role or prefs.get("job_title") or "").strip() or "target role"
+    city = (payload.target_city or prefs.get("city") or prefs.get("country") or "").strip() or "preferred location"
+    lang = (payload.language or "en").strip().lower()
+    plan = _build_career_plan(cv_text, role, city, language=lang)
+    return {
+        "target_role": role,
+        "target_city": city,
+        "language": lang,
+        "plan": plan,
+    }
 
 
 @app.post("/profile/preferences")

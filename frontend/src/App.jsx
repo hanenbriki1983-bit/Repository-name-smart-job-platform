@@ -7,8 +7,11 @@ const configuredApiUrl = import.meta.env.VITE_API_URL?.trim()
 const runtimeHost = typeof window !== 'undefined' ? window.location.hostname : 'localhost'
 const localApiCandidates = Array.from(
   new Set([
+    `http://${runtimeHost}:8002`,
     `http://${runtimeHost}:8001`,
     `http://${runtimeHost}:8000`,
+    'http://127.0.0.1:8002',
+    'http://localhost:8002',
     'http://127.0.0.1:8001',
     'http://localhost:8001',
     'http://127.0.0.1:8000',
@@ -577,12 +580,39 @@ const getShortReason = (job) => {
   return 'General match based on your profile.'
 }
 
-const renderCompanyLogo = (job) => {
+function CompanyLogo({ job }) {
+  const [imgBroken, setImgBroken] = useState(false)
   const initials = (job?.company_initials || (job?.company || 'CO').split(/\s+/).slice(0, 2).map((part) => part[0]).join('').toUpperCase() || 'CO')
-  if (job?.company_logo_url) {
-    return <img className="job-logo" src={job.company_logo_url} alt={`${job.company || 'Company'} logo`} loading="lazy" />
+  const targetUrl = (job?.company_website_url || job?.logo_click_url || job?.apply_url || '').trim()
+  const clickable = isValidApplyUrl(targetUrl)
+  if (job?.company_logo_url && !imgBroken) {
+    const img = (
+      <img
+        className="job-logo"
+        src={job.company_logo_url}
+        alt={`${job.company || 'Company'} logo`}
+        loading="lazy"
+        onError={() => setImgBroken(true)}
+      />
+    )
+    if (clickable) {
+      return (
+        <a href={targetUrl} target="_blank" rel="noopener noreferrer" aria-label={`${job.company || 'Company'} website`}>
+          {img}
+        </a>
+      )
+    }
+    return img
   }
-  return <div className="job-logo placeholder" aria-label={`${job?.company || 'Company'} initials`}>{initials}</div>
+  const placeholder = <div className="job-logo placeholder" aria-label={`${job?.company || 'Company'} initials`}>{initials}</div>
+  if (clickable) {
+    return (
+      <a href={targetUrl} target="_blank" rel="noopener noreferrer" aria-label={`${job.company || 'Company'} website`}>
+        {placeholder}
+      </a>
+    )
+  }
+  return placeholder
 }
 
 function Layout({ children, isAuthenticated, onLogout, lang, onLangChange }) {
@@ -838,6 +868,8 @@ function JobsPage({ token, lang }) {
   const [uploadError, setUploadError] = useState('')
   const [uploadMessage, setUploadMessage] = useState('')
   const [showMap, setShowMap] = useState(false)
+  const [saveSearchStatus, setSaveSearchStatus] = useState('')
+  const [saveWithNotifications, setSaveWithNotifications] = useState(false)
   const nearbyCities = getNearbyCities(filters.country, filters.city)
   const mappableJobs = jobs.filter((job) => Number.isFinite(job.latitude) && Number.isFinite(job.longitude))
 
@@ -963,7 +995,11 @@ function JobsPage({ token, lang }) {
           if (rawResponse.ok) {
             const rawData = await rawResponse.json()
             const rawItems = normalizeItems(rawData)
-            const filteredFallback = filterJobsClientSide(rawItems, activeFilters, { exactTitleRequired: false, includeNearbyCities: true })
+            const hasRoleQuery = Boolean((activeFilters.job_title || activeFilters.search_text || '').trim())
+            const filteredFallback = filterJobsClientSide(rawItems, activeFilters, {
+              exactTitleRequired: hasRoleQuery,
+              includeNearbyCities: true,
+            })
             console.log('[JobsPage] /jobs fallback items.length =', rawItems.length, 'filtered =', filteredFallback.length)
             nextJobs = filteredFallback
           }
@@ -1035,6 +1071,27 @@ function JobsPage({ token, lang }) {
     }
     setFilters(nextFilters)
     await runSearch({ append: false, overrideFilters: nextFilters })
+  }
+
+  const saveCurrentSearch = async () => {
+    if (!token) return
+    setSaveSearchStatus('')
+    try {
+      const response = await fetchWithFallback('/saved-searches', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({
+          name: `${(filters.job_title || filters.search_text || 'My').trim()} search`,
+          ...filters,
+          email_notifications_enabled: saveWithNotifications,
+        }),
+      })
+      const data = await response.json()
+      if (!response.ok) throw new Error(data.detail || 'Could not save search')
+      setSaveSearchStatus(data.message || 'Search saved.')
+    } catch (err) {
+      setSaveSearchStatus(err.message || 'Could not save search')
+    }
   }
 
   useEffect(() => {
@@ -1233,6 +1290,20 @@ function JobsPage({ token, lang }) {
           </button>
         </div>
       )}
+      {token && (
+        <div className="actions">
+          <label>
+            <input
+              type="checkbox"
+              checked={saveWithNotifications}
+              onChange={(e) => setSaveWithNotifications(Boolean(e.target.checked))}
+            />
+            Enable email notifications for this saved search
+          </label>
+          <button type="button" className="btn btn-secondary" onClick={saveCurrentSearch}>Save this search</button>
+          {saveSearchStatus && <p className="success">{saveSearchStatus}</p>}
+        </div>
+      )}
       <div className="actions">
         <button
           type="button"
@@ -1272,7 +1343,7 @@ function JobsPage({ token, lang }) {
       <div className="jobs-list">
         {jobs.map((job) => (
           <article className="job-item" key={`${job.job_id || 'job'}-${job.external_id || job.id || job.title}`}>
-            {renderCompanyLogo(job)}
+            <CompanyLogo job={job} />
             <h3>{job.title}</h3>
             <p>{job.company}</p>
             <small>{job.city || job.location}</small>
@@ -1345,6 +1416,9 @@ function DashboardPage({ currentUser, token, onAuthInvalid, lang }) {
   const [dashboardCorrectionHint, setDashboardCorrectionHint] = useState('')
   const [dashboardAlternativeTitleSuggestion, setDashboardAlternativeTitleSuggestion] = useState('')
   const [authError, setAuthError] = useState('')
+  const [careerPlan, setCareerPlan] = useState(null)
+  const [careerPlanLoading, setCareerPlanLoading] = useState(false)
+  const [careerPlanError, setCareerPlanError] = useState('')
   const [cityOptions, setCityOptions] = useState([])
   const dashboardNearbyCities = getNearbyCities(preferences.country, preferences.city)
 
@@ -1623,6 +1697,29 @@ function DashboardPage({ currentUser, token, onAuthInvalid, lang }) {
     await runDashboardSearch({ append: false, overridePreferences: nextPreferences })
   }
 
+  const generateCareerPlan = async () => {
+    setCareerPlanError('')
+    setCareerPlanLoading(true)
+    try {
+      const response = await fetchWithFallback('/career/plan', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({
+          target_role: preferences.job_title || '',
+          target_city: preferences.city || 'Germany',
+          language: lang,
+        }),
+      })
+      const data = await response.json()
+      if (!response.ok) throw new Error(data.detail || 'Could not generate career plan')
+      setCareerPlan(data)
+    } catch (err) {
+      setCareerPlanError(err.message || 'Could not generate career plan')
+    } finally {
+      setCareerPlanLoading(false)
+    }
+  }
+
   return (
     <section className="dashboard-grid">
       <article className="card dashboard-sidebar">
@@ -1845,7 +1942,7 @@ function DashboardPage({ currentUser, token, onAuthInvalid, lang }) {
           {matches.length === 0 && !matchesError && !matchSearchMeta.message && <p>{t('noMatches')}</p>}
           {matches.map((item) => (
             <div className="match-item" key={item.job_id}>
-              {renderCompanyLogo(item)}
+              <CompanyLogo job={item} />
               <strong>{item.title}</strong>
               <p>
                 {item.company} - {item.city || item.location}
@@ -1876,6 +1973,38 @@ function DashboardPage({ currentUser, token, onAuthInvalid, lang }) {
             >
               {matchesLoadingMore ? t('loadingMore') : t('loadMore')}
             </button>
+          </div>
+        )}
+      </article>
+      <article className="card">
+        <h2>Career Plan</h2>
+        <p>Build a realistic 30/60/90-day plan from your CV and target role.</p>
+        {careerPlanError && <p className="error">{careerPlanError}</p>}
+        <button type="button" className="btn" onClick={generateCareerPlan} disabled={careerPlanLoading}>
+          {careerPlanLoading ? 'Generating...' : 'Generate Career Plan'}
+        </button>
+        {careerPlan?.plan && (
+          <div className="tips-list">
+            <div className="tip-item">
+              <strong>Focus</strong>
+              <p>{careerPlan.plan.summary}</p>
+            </div>
+            <div className="tip-item">
+              <strong>Top Gaps</strong>
+              {(careerPlan.plan.gaps || []).map((gap, idx) => <p key={`gap-${idx}`}>- {gap}</p>)}
+            </div>
+            <div className="tip-item">
+              <strong>30 Days</strong>
+              {(careerPlan.plan.plan_30 || []).map((step, idx) => <p key={`p30-${idx}`}>- {step}</p>)}
+            </div>
+            <div className="tip-item">
+              <strong>60 Days</strong>
+              {(careerPlan.plan.plan_60 || []).map((step, idx) => <p key={`p60-${idx}`}>- {step}</p>)}
+            </div>
+            <div className="tip-item">
+              <strong>90 Days</strong>
+              {(careerPlan.plan.plan_90 || []).map((step, idx) => <p key={`p90-${idx}`}>- {step}</p>)}
+            </div>
           </div>
         )}
       </article>
@@ -2137,12 +2266,15 @@ function ChatbotPage({ token, lang, compact = false }) {
 }
 
 function SettingsPage({ token }) {
+  const [params] = useSearchParams()
   const [email, setEmail] = useState('')
   const [phone, setPhone] = useState('')
   const [status, setStatus] = useState('')
   const [error, setError] = useState('')
   const [resetEmail, setResetEmail] = useState('')
   const [resetInfo, setResetInfo] = useState('')
+  const [emailVerified, setEmailVerified] = useState(false)
+  const [emailNotificationsEnabled, setEmailNotificationsEnabled] = useState(false)
 
   useEffect(() => {
     const load = async () => {
@@ -2153,12 +2285,34 @@ function SettingsPage({ token }) {
         setEmail(data.email || '')
         setPhone(data.phone || '')
         setResetEmail(data.email || '')
+        setEmailVerified(Boolean(data.email_verified))
+        setEmailNotificationsEnabled(Boolean(data.email_notifications_enabled))
       } catch {
         // noop
       }
     }
     load()
   }, [token])
+
+  useEffect(() => {
+    const verifyToken = (params.get('verify_email_token') || '').trim()
+    if (!verifyToken || !token) return
+    const confirm = async () => {
+      try {
+        const response = await fetchWithFallback(`/auth/email-verification/confirm?token=${encodeURIComponent(verifyToken)}`, {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${token}` },
+        })
+        const data = await response.json()
+        if (!response.ok) throw new Error(data.detail || 'Verification failed')
+        setStatus(data.message || 'Email verified.')
+        setEmailVerified(true)
+      } catch (err) {
+        setError(err.message || 'Verification failed')
+      }
+    }
+    confirm()
+  }, [params, token])
 
   const saveSettings = async (event) => {
     event.preventDefault()
@@ -2195,6 +2349,39 @@ function SettingsPage({ token }) {
     }
   }
 
+  const requestEmailVerification = async () => {
+    setStatus('')
+    setError('')
+    try {
+      const response = await fetchWithFallback('/auth/email-verification/request', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` },
+      })
+      const data = await response.json()
+      if (!response.ok) throw new Error(data.detail || 'Could not request verification')
+      setStatus(data.dev_verify_link ? `${data.message} ${data.dev_verify_link}` : (data.message || 'Verification requested'))
+    } catch (err) {
+      setError(err.message || 'Could not request verification')
+    }
+  }
+
+  const toggleEmailNotifications = async (enabled) => {
+    setStatus('')
+    setError('')
+    try {
+      const response = await fetchWithFallback(`/profile/email-notifications?enabled=${enabled ? 'true' : 'false'}`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` },
+      })
+      const data = await response.json()
+      if (!response.ok) throw new Error(data.detail || 'Could not update notifications')
+      setEmailNotificationsEnabled(Boolean(data.enabled))
+      setStatus(data.message || 'Updated')
+    } catch (err) {
+      setError(err.message || 'Could not update notifications')
+    }
+  }
+
   return (
     <section className="card">
       <h2>Settings</h2>
@@ -2205,6 +2392,22 @@ function SettingsPage({ token }) {
         {status && <p className="success">{status}</p>}
         <button className="btn" type="submit">Save profile</button>
       </form>
+      <hr />
+      <h3>Email verification + notifications</h3>
+      <p>{emailVerified ? 'Email verified' : 'Email not verified yet'}</p>
+      {!emailVerified && (
+        <button type="button" className="btn btn-secondary" onClick={requestEmailVerification}>Send verification email</button>
+      )}
+      <div className="actions">
+        <button
+          type="button"
+          className="btn btn-secondary"
+          onClick={() => toggleEmailNotifications(!emailNotificationsEnabled)}
+          disabled={!emailVerified}
+        >
+          {emailNotificationsEnabled ? 'Disable email notifications' : 'Enable email notifications'}
+        </button>
+      </div>
       <hr />
       <h3>Password reset by email</h3>
       <form className="form-grid" onSubmit={requestReset}>
