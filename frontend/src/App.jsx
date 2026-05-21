@@ -5,8 +5,11 @@ import heroImage from './assets/hero.png'
 
 const configuredApiUrl = import.meta.env.VITE_API_URL?.trim()
 const runtimeHost = typeof window !== 'undefined' ? window.location.hostname : 'localhost'
+const runtimeOrigin = typeof window !== 'undefined' ? window.location.origin : ''
+const isHttpsPage = typeof window !== 'undefined' && window.location.protocol === 'https:'
 const localApiCandidates = Array.from(
   new Set([
+    `${runtimeOrigin}`,
     `http://${runtimeHost}:8002`,
     `http://${runtimeHost}:8001`,
     `http://${runtimeHost}:8000`,
@@ -438,14 +441,22 @@ const fetchWithFallback = async (path, options = {}) => {
   }
 
   let lastError
+  const failures = []
   for (const baseUrl of localApiCandidates) {
+    if (isHttpsPage && /^http:\/\//i.test(baseUrl)) continue
     try {
       return await fetch(`${baseUrl}${path}`, options)
     } catch (error) {
       lastError = error
+      failures.push(`${baseUrl}${path} -> ${error?.message || 'network error'}`)
     }
   }
-  throw lastError || new Error('Could not connect to backend API')
+  if (lastError) {
+    throw new Error(
+      `Could not connect to backend API. Start backend or set VITE_API_URL. Tried: ${failures.join(' | ')}`.slice(0, 1200)
+    )
+  }
+  throw new Error('Could not connect to backend API. Start backend or set VITE_API_URL.')
 }
 
 const getAlternativeJobTitleSuggestion = async (rawTitle, lang) => {
@@ -2014,8 +2025,9 @@ function DashboardPage({ currentUser, token, onAuthInvalid, lang }) {
 
 function ChatbotPage({ token, lang, compact = false }) {
   const t = (key) => tFor(lang, key)
+  const defaultGreeting = tFor(lang, 'chatbotGreeting')
   const [messages, setMessages] = useState([
-    { role: 'assistant', content: tFor(lang, 'chatbotGreeting') },
+    { role: 'assistant', content: defaultGreeting },
   ])
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(false)
@@ -2030,6 +2042,11 @@ function ChatbotPage({ token, lang, compact = false }) {
   const [improvedCvText, setImprovedCvText] = useState('')
   const [cvBusy, setCvBusy] = useState(false)
   const [cvStatus, setCvStatus] = useState('')
+  const [chatMode, setChatMode] = useState('general')
+  const chatStorageKey = useMemo(() => {
+    const scope = token ? 'auth' : 'anon'
+    return `smartjob_chat_${scope}_${lang}`
+  }, [token, lang])
   const recognitionRef = useRef(null)
   const keepListeningRef = useRef(false)
   const receivedSpeechRef = useRef(false)
@@ -2052,6 +2069,40 @@ function ChatbotPage({ token, lang, compact = false }) {
   }, [])
 
   useEffect(() => {
+    try {
+      const raw = localStorage.getItem(chatStorageKey)
+      if (!raw) {
+        setMessages([{ role: 'assistant', content: defaultGreeting }])
+        return
+      }
+      const parsed = JSON.parse(raw)
+      if (!Array.isArray(parsed) || parsed.length === 0) {
+        setMessages([{ role: 'assistant', content: defaultGreeting }])
+        return
+      }
+      const safe = parsed
+        .filter((item) => item && (item.role === 'assistant' || item.role === 'user') && typeof item.content === 'string')
+        .map((item) => ({ role: item.role, content: item.content }))
+        .slice(-80)
+      setMessages(safe.length ? safe : [{ role: 'assistant', content: defaultGreeting }])
+    } catch {
+      setMessages([{ role: 'assistant', content: defaultGreeting }])
+    }
+  }, [chatStorageKey, defaultGreeting])
+
+  useEffect(() => {
+    const persistable = messages
+      .filter((item) => item && (item.role === 'assistant' || item.role === 'user') && typeof item.content === 'string')
+      .filter((item) => item.content.trim().toLowerCase() !== 'typing...')
+      .slice(-80)
+    try {
+      localStorage.setItem(chatStorageKey, JSON.stringify(persistable))
+    } catch {
+      // noop
+    }
+  }, [messages, chatStorageKey])
+
+  useEffect(() => {
     const loadCvGreeting = async () => {
       if (!token) return
       try {
@@ -2065,13 +2116,24 @@ function ChatbotPage({ token, lang, compact = false }) {
           de: `Hallo ${name}, ich habe deinen Lebenslauf gefunden. Wie kann ich dir bei der Jobsuche helfen?`,
           ar: `مرحبًا ${name}، وجدت سيرتك الذاتية. كيف يمكنني مساعدتك في العثور على وظيفة؟`,
         }
-        setMessages([{ role: 'assistant', content: greetingByLang[lang] || greetingByLang.en }])
+        setMessages((prev) => {
+          if (!Array.isArray(prev) || prev.length === 0) return [{ role: 'assistant', content: greetingByLang[lang] || greetingByLang.en }]
+          const onlyDefaultGreeting = prev.length === 1 && prev[0]?.role === 'assistant' && prev[0]?.content === defaultGreeting
+          if (!onlyDefaultGreeting) return prev
+          return [{ role: 'assistant', content: greetingByLang[lang] || greetingByLang.en }]
+        })
       } catch {
         // keep default greeting
       }
     }
     loadCvGreeting()
-  }, [token, lang])
+  }, [token, lang, defaultGreeting])
+
+  const clearChatHistory = () => {
+    localStorage.removeItem(chatStorageKey)
+    setMessages([{ role: 'assistant', content: defaultGreeting }])
+    setError('')
+  }
 
   const sendMessage = async (event) => {
     event.preventDefault()
@@ -2079,24 +2141,41 @@ function ChatbotPage({ token, lang, compact = false }) {
     if (!text || loading) return
     setError('')
     setLoading(true)
-    setMessages((prev) => [...prev, { role: 'user', content: text }])
+    const pendingId = `pending-${Date.now()}`
+    setMessages((prev) => [
+      ...prev,
+      { role: 'user', content: text },
+      { role: 'assistant', content: 'Typing...', pendingId },
+    ])
     setInput('')
     try {
       const headers = { 'Content-Type': 'application/json' }
       if (token) headers.Authorization = `Bearer ${token}`
+      const controller = new AbortController()
+      const timer = setTimeout(() => controller.abort(), 15000)
       const response = await fetchWithFallback('/chatbot/message', {
         method: 'POST',
         headers,
-        body: JSON.stringify({ message: text }),
+        body: JSON.stringify({ message: text, mode: chatMode }),
+        signal: controller.signal,
       })
+      clearTimeout(timer)
       const data = await response.json()
       if (!response.ok) {
         throw new Error(data.detail || 'Chatbot request failed')
       }
       const replyText = data.reply || 'No response.'
-      setMessages((prev) => [...prev, { role: 'assistant', content: replyText }])
+      setMessages((prev) => prev.map((msg) => (msg.pendingId === pendingId ? { role: 'assistant', content: replyText } : msg)))
     } catch (err) {
-      setError(err.message || 'Chatbot failed')
+      const timedOut = err?.name === 'AbortError'
+      setMessages((prev) =>
+        prev.map((msg) =>
+          msg.pendingId === pendingId
+            ? { role: 'assistant', content: timedOut ? 'Request timed out. Please try again.' : 'Chatbot failed. Please retry.' }
+            : msg
+        )
+      )
+      setError(timedOut ? 'Chatbot request timed out' : (err.message || 'Chatbot failed'))
     } finally {
       setLoading(false)
     }
@@ -2339,6 +2418,17 @@ function ChatbotPage({ token, lang, compact = false }) {
   return (
     <section className={`card chatbot ${compact ? 'compact' : ''}`}>
       <h2>{t('chatbot')}</h2>
+      <div className="actions" style={{ marginBottom: '0.5rem' }}>
+        <button type="button" className={`btn ${chatMode === 'general' ? '' : 'btn-secondary'}`} onClick={() => setChatMode('general')}>
+          General
+        </button>
+        <button type="button" className={`btn ${chatMode === 'career' ? '' : 'btn-secondary'}`} onClick={() => setChatMode('career')}>
+          Career
+        </button>
+        <button type="button" className="btn btn-secondary" onClick={clearChatHistory}>
+          Clear Chat
+        </button>
+      </div>
       {error && <p className="error">{error}</p>}
       <div className="chat-stream">
         {messages.map((message, idx) => (
@@ -2618,6 +2708,13 @@ function App() {
   })
 
   const isAuthenticated = Boolean(token)
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || !('serviceWorker' in navigator)) return
+    navigator.serviceWorker.getRegistrations()
+      .then((registrations) => registrations.forEach((registration) => registration.unregister()))
+      .catch(() => {})
+  }, [])
 
   useEffect(() => {
     localStorage.setItem('ui_lang', lang)
